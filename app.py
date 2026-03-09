@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import ast
@@ -538,6 +538,7 @@ def has_ts_label(labels: list[str]) -> bool:
     norm = [normalize_diag_token(x) for x in labels]
     return "T(s)" in norm
 
+
 BESTCASE_PCT_COLS = [
     "best_cov_pct",
     "best_bundle_pct",
@@ -559,9 +560,8 @@ TIMESERIES_PCT_COLS = [
     "bundle_loss_pw_sd_time",
 ]
 
-
 def normalize_pct_df(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-    if df is None or df.empty:
+    if df is None or len(df) == 0:
         return df
     out = df.copy()
     for c in cols:
@@ -575,11 +575,9 @@ def normalize_pct_df(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
         out[c] = vals * 100.0 if float(np.nanmax(np.abs(finite))) <= 1.000001 else vals
     return out
 
-
 def time_token_to_hour(token: Any) -> Optional[int]:
     m = re.search(r"(?:pt)?(\d{2})", str(token))
     return int(m.group(1)) if m else None
-
 
 def time_token_to_label(token: Any) -> str:
     hh = time_token_to_hour(token)
@@ -593,11 +591,9 @@ def time_token_to_label(token: Any) -> str:
         return "12pm"
     return f"{hh - 12}pm"
 
-
 def prepare_timeseries_for_ui(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
+    if df is None or len(df) == 0:
         return pd.DataFrame()
-
     out = normalize_pct_df(df, TIMESERIES_PCT_COLS)
     out["from_id"] = out["from_id"].astype(str)
     out["time"] = out["time"].astype(str)
@@ -606,31 +602,23 @@ def prepare_timeseries_for_ui(df: pd.DataFrame) -> pd.DataFrame:
     out = out.sort_values(["time_order", "time"]).reset_index(drop=True)
     return out
 
-
 def summarize_metrics_from_timeseries(ts: pd.DataFrame, base: Optional[dict] = None) -> Dict[str, Any]:
     out = dict(base or {})
-    if ts is None or ts.empty:
+    if ts is None or len(ts) == 0:
         return out
-
     ts2 = prepare_timeseries_for_ui(ts)
-
     cov_idx = ts2["coverage_pct"].astype(float).idxmax()
     bun_idx = ts2["bundle_pct"].astype(float).idxmax()
-
     best_cov = ts2.loc[cov_idx]
     best_bun = ts2.loc[bun_idx]
-
     out.update({
         "best_cov_pct": float(best_cov["coverage_pct"]),
         "best_cov_time": str(best_cov["time"]),
         "best_cov_label": str(best_cov["time_label"]),
-
         "best_bundle_pct": float(best_bun["bundle_pct"]),
         "best_bundle_time": str(best_bun["time"]),
         "best_bundle_label": str(best_bun["time_label"]),
-
         "bundle_gap_best": float(best_cov["coverage_pct"] - best_bun["bundle_pct"]),
-
         "coverage_loss_mean": float(pd.to_numeric(ts2["coverage_loss_bestcase"], errors="coerce").mean()),
         "coverage_loss_std": float(pd.to_numeric(ts2["coverage_loss_bestcase"], errors="coerce").std(ddof=0)),
         "bundle_loss_mean": float(pd.to_numeric(ts2["bundle_loss_bestcase"], errors="coerce").mean()),
@@ -638,21 +626,16 @@ def summarize_metrics_from_timeseries(ts: pd.DataFrame, base: Optional[dict] = N
     })
     return out
 
-
 def timeseries_match(cache_ts: pd.DataFrame, od_ts: pd.DataFrame, tol: float = 0.05) -> bool:
-    if cache_ts is None or od_ts is None or cache_ts.empty or od_ts.empty:
+    if cache_ts is None or od_ts is None or len(cache_ts) == 0 or len(od_ts) == 0:
         return False
-
     a = prepare_timeseries_for_ui(cache_ts)[["time", "coverage_pct", "bundle_pct"]].copy()
     b = prepare_timeseries_for_ui(od_ts)[["time", "coverage_pct", "bundle_pct"]].copy()
-
     merged = a.merge(b, on="time", suffixes=("_cache", "_od"))
     if len(merged) != len(a) or len(merged) != len(b):
         return False
-
     cov_diff = np.nanmax(np.abs(merged["coverage_pct_cache"] - merged["coverage_pct_od"]))
     bun_diff = np.nanmax(np.abs(merged["bundle_pct_cache"] - merged["bundle_pct_od"]))
-
     return bool(cov_diff <= tol and bun_diff <= tol)
 
 
@@ -666,13 +649,10 @@ def load_std_bestcase_resource() -> pd.DataFrame:
     df = pl.read_parquet(BESTCASE_PATH).to_pandas()
     df["from_id"] = df["from_id"].astype(str)
     df = normalize_pct_df(df, BESTCASE_PCT_COLS)
-
     if "best_cov_label" not in df.columns and "best_cov_time" in df.columns:
         df["best_cov_label"] = df["best_cov_time"].map(time_token_to_label)
-
     if "best_bundle_label" not in df.columns and "best_bundle_time" in df.columns:
         df["best_bundle_label"] = df["best_bundle_time"].map(time_token_to_label)
-
     return df.set_index("from_id", drop=False)
 
 @st.cache_resource(show_spinner=False)
@@ -1443,23 +1423,13 @@ def add_hatch_for_polygon(
 # =========================================================
 # 11) 차트
 # =========================================================
-def make_line_figure(
-    df: pd.DataFrame,
-    y_col: str,
-    hover_col: str,
-    title: str,
-    selected_time: Optional[str],
-    line_color: str,
-) -> go.Figure:
+def make_line_figure(df: pd.DataFrame, y_col: str, hover_col: str, title: str, selected_time: Optional[str], line_color: str) -> go.Figure:
     marker_size = [13 if str(t) == str(selected_time) else 9 for t in df["time"]]
-
-    custom = np.stack(
-        [
-            df[hover_col].fillna("").astype(str),
-            df["time_label"].fillna(df["time"]).astype(str),
-        ],
-        axis=-1,
-    )
+    hover_vals = df[hover_col].fillna("").astype(str) if hover_col in df.columns else pd.Series([""] * len(df))
+    custom = np.stack([
+        hover_vals,
+        df["time_label"].fillna(df["time"]).astype(str),
+    ], axis=-1)
 
     fig = go.Figure()
     fig.add_trace(
@@ -1467,11 +1437,7 @@ def make_line_figure(
             x=df["time"],
             y=df[y_col],
             mode="lines+markers",
-            marker=dict(
-                size=marker_size,
-                color=line_color,
-                line=dict(width=1, color="white"),
-            ),
+            marker=dict(size=marker_size, color=line_color, line=dict(width=1, color="white")),
             line=dict(width=3, color=line_color),
             fill="tozeroy",
             fillcolor="rgba(79,125,232,0.08)" if line_color == "#4f7de8" else "rgba(245,158,11,0.08)",
@@ -1479,7 +1445,6 @@ def make_line_figure(
             hovertemplate="%{customdata[1]}<br>%{y:.1f}%<br>%{customdata[0]}<extra></extra>",
         )
     )
-
     fig.update_layout(
         title=title,
         height=300,
@@ -1490,7 +1455,6 @@ def make_line_figure(
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
-
     fig.update_yaxes(range=[0, 100], gridcolor="rgba(148,163,184,0.20)")
     fig.update_xaxes(
         tickmode="array",
@@ -1827,11 +1791,8 @@ if st.session_state.analysis_requested and st.session_state.selected_from_id and
         if not bestcase_std_df.empty and st.session_state.selected_from_id in bestcase_std_df.index:
             base_metrics = bestcase_std_df.loc[st.session_state.selected_from_id].to_dict()
 
-        od_ts = prepare_timeseries_for_ui(
-            compute_single_origin_standard_from_od(st.session_state.selected_from_id)
-        )
+        od_ts = prepare_timeseries_for_ui(compute_single_origin_standard_from_od(st.session_state.selected_from_id))
         cache_ts = get_std_timeseries_for_origin(st.session_state.selected_from_id)
-
         timeseries_df = od_ts
 
         if not cache_ts.empty and not timeseries_match(cache_ts, od_ts):
@@ -1845,7 +1806,6 @@ if st.session_state.analysis_requested and st.session_state.selected_from_id and
 
     else:
         analysis_df = compute_all_origin_metrics_custom(tuple(acts))
-
         base_metrics = None
         row = analysis_df.loc[analysis_df["from_id"] == st.session_state.selected_from_id]
         if not row.empty:
@@ -1857,7 +1817,6 @@ if st.session_state.analysis_requested and st.session_state.selected_from_id and
                 tuple(acts),
             )
         )
-
         selected_origin_metrics = summarize_metrics_from_timeseries(timeseries_df, base_metrics)
 
 if timeseries_df is not None and not timeseries_df.empty:
@@ -1915,87 +1874,62 @@ with col_side:
             struct_parts.append(struct_label)
         elif struct_label == "양호":
             struct_parts.append("양호")
-
         if has_ts:
             struct_parts.append("T(s)")
-
         struct_text = ", ".join(struct_parts) if struct_parts else "미계산"
 
         top_cards = st.columns(2, gap="small")
-
         with top_cards[0]:
-            st.markdown(
-                f"""
+            st.markdown(f"""
                 <div class="metric-card">
                     <div class="small-muted">구조 취약 유형</div>
                     <div style="font-size:1.35rem; font-weight:700; margin-top:0.4rem;">{struct_text}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
+                """, unsafe_allow_html=True)
         with top_cards[1]:
-            st.markdown(
-                f"""
+            st.markdown(f"""
                 <div class="metric-card">
                     <div class="small-muted">best bundle</div>
                     <div style="font-size:1.15rem; font-weight:700; margin-top:0.4rem;">{safe_float(selected_origin_metrics.get('best_bundle_pct')):.1f}%</div>
                     <div class="small-muted">@ {selected_origin_metrics.get('best_bundle_label', time_token_to_label(selected_origin_metrics.get('best_bundle_time', '-')))}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """, unsafe_allow_html=True)
 
         info_cols = st.columns(2, gap="small")
-
         with info_cols[0]:
-            st.markdown(
-                f"""
+            st.markdown(f"""
                 <div class="soft-card">
                     <div class="small-muted">best coverage</div>
                     <div style="font-size:1.15rem; font-weight:700;">{safe_float(selected_origin_metrics.get('best_cov_pct')):.1f}%</div>
                     <div class="small-muted">@ {selected_origin_metrics.get('best_cov_label', time_token_to_label(selected_origin_metrics.get('best_cov_time', '-')))}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
+                """, unsafe_allow_html=True)
         with info_cols[1]:
-            st.markdown(
-                f"""
+            st.markdown(f"""
                 <div class="soft-card">
                     <div class="small-muted">bundle gap</div>
                     <div style="font-size:1.15rem; font-weight:700;">{safe_float(selected_origin_metrics.get('bundle_gap_best')):.1f}%p</div>
                     <div class="small-muted">best 기준</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """, unsafe_allow_html=True)
 
-        st.markdown(
-            f"""
+        st.markdown(f"""
             <div class="hint-card">
                 <div><b>coverage loss mean</b>: {safe_float(selected_origin_metrics.get('coverage_loss_mean')):.1f}</div>
                 <div><b>coverage loss std</b>: {safe_float(selected_origin_metrics.get('coverage_loss_std')):.1f}</div>
                 <div><b>bundle loss mean</b>: {safe_float(selected_origin_metrics.get('bundle_loss_mean')):.1f}</div>
                 <div><b>bundle loss std</b>: {safe_float(selected_origin_metrics.get('bundle_loss_std')):.1f}</div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            """, unsafe_allow_html=True)
 
     st.divider()
     st.subheader("지표 해석")
-    st.markdown(
-        """
+    st.markdown("""
         - **coverage_pct**: 선택 activity set 중 해당 시간대에 reachable한 항목 비율(%)
         - **bundle_pct**: 하나의 bundle 격자에서 함께 만족되는 activity 비율(%)
         - **bundle gap**: best coverage와 best bundle의 차이(%p)
         - **best case**: 해당 지표가 가장 높은 시간대
-        """
-    )
-
-
+        """)
 # =========================================================
 # 18) 현재 뷰 데이터
 # =========================================================
@@ -2005,6 +1939,7 @@ current_zoom = st.session_state.map_zoom or DEFAULT_ZOOM
 need_grid_layer = False
 need_point_layer = False
 
+# 초기엔 아무것도 안 그림
 if st.session_state.analysis_requested and current_zoom >= GRID_RENDER_MIN_ZOOM:
     need_grid_layer = True
 
@@ -2190,20 +2125,16 @@ with bottom_right:
     if picked is None:
         st.write("선택된 시간대 정보가 없습니다.")
     else:
-        st.markdown(
-            f"""
+        st.markdown(f"""
             <div class="soft-card">
                 <div class="small-muted">현재 시간대</div>
                 <div style="font-size:1.2rem; font-weight:700;">{picked.get('time_label', time_token_to_label(picked.get('time')))}</div>
                 <div class="small-muted">coverage {safe_float(picked.get('coverage_pct')):.1f}% · bundle {safe_float(picked.get('bundle_pct')):.1f}%</div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            """, unsafe_allow_html=True)
 
         st.markdown(f"**coverage 도달 가능 시설 종류**: {picked.get('reachable_set', '없음')}")
         st.markdown(f"**bundle 최대 조합 시설 종류**: {picked.get('bundle_set', '없음')}")
-
         st.caption(f"coverage loss (best case 기준): {safe_float(picked.get('coverage_loss_bestcase')):.1f}")
         st.caption(f"bundle loss (best case 기준): {safe_float(picked.get('bundle_loss_bestcase')):.1f}")
 
@@ -2211,18 +2142,13 @@ with bottom_right:
             st.caption(f"coverage weakness quadrant: {picked['coverage_ts_quadrant_time']}")
         if "bundle_ts_quadrant_time" in picked and pd.notna(picked["bundle_ts_quadrant_time"]):
             st.caption(f"bundle weakness quadrant: {picked['bundle_ts_quadrant_time']}")
-
         if "coverage_ts_type_time" in picked and pd.notna(picked["coverage_ts_type_time"]):
             st.caption(f"coverage T(s): {picked['coverage_ts_type_time']}")
         if "bundle_ts_type_time" in picked and pd.notna(picked["bundle_ts_type_time"]):
             st.caption(f"bundle T(s): {picked['bundle_ts_type_time']}")
 
         bun_id = picked.get("bundle_id", None)
-        st.markdown(
-            f"**bundle_id**: `{bun_id}`"
-            if bun_id not in [None, "", "None", "nan"]
-            else "**bundle_id**: 없음"
-        )
+        st.markdown(f"**bundle_id**: `{bun_id}`" if bun_id not in [None, "", "None", "nan"] else "**bundle_id**: 없음")
 
     st.divider()
     st.subheader("선택 bundle 격자 내 시설 요약")
@@ -2233,7 +2159,6 @@ with bottom_right:
         st.write("선택 시간대의 bundle 격자가 없거나, 해당 격자 내 시설이 없습니다.")
     else:
         st.dataframe(bundle_summary_df, use_container_width=True, hide_index=True)
-
         if med_summary_df is not None and not med_summary_df.empty:
             st.markdown("**의료시설 세부 구성**")
             st.dataframe(med_summary_df, use_container_width=True, hide_index=True)
