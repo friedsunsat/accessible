@@ -6,7 +6,7 @@ services:
     ports:
       - "8501:8501"
     environment:
-      VWORLD_API_KEY: ${VWORLD_API_KEY}
-      DATA_ROOT: ${DATA_ROOT}
+      DATA_ROOT: ${DATA_ROOT:-/app/data}
     volumes:
       - ./data:/app/data
+    restart: unless-stopped

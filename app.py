@@ -6,117 +6,194 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-import folium
 import geopandas as gpd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from folium.features import GeoJson, GeoJsonTooltip
 from matplotlib.colors import Normalize, PowerNorm
-from shapely.geometry import Point, box
-from streamlit_folium import st_folium
+from shapely.geometry import box
 import streamlit.components.v1 as st_components
 
 
 # =========================================================
 # 경로 자동 탐색
 # =========================================================
-def pick_dropbox_base() -> Path:
-    candidates = [
-        Path(r"E:\Dropbox"),
-        Path(r"C:\Users\82102\Dropbox"),
-        Path.home() / "Dropbox",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    # 마지막 fallback
-    return Path(r"C:\Users\82102\Dropbox")
-
-
 def pick_first_existing_path(*paths: Path) -> Path:
     for p in paths:
         if p.exists():
             return p
-    # 하나도 없으면 첫 번째 반환만 해두고, 실제 실행 시 체크에서 에러 표시
     return paths[0]
 
 
-DROPBOX_BASE = pick_dropbox_base()
+import os as _os
 
-ROOT_OUT = DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\02-삽도자료\02_학회자료\01_교통학회"
+_DATA_ROOT_ENV = _os.environ.get("DATA_ROOT", "")
 
-CLASSIFIED_PATH = pick_first_existing_path(
-    DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\01-전처리\02_routing\01_intercity\02_500m\from_metrics_500m_intracity_classified.parquet",
-    DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\01-전처리\02_routing\01_intercity\02_500m\500m_classified.parquet",
-)
+if _DATA_ROOT_ENV:
+    # ── 서버 모드: DATA_ROOT=/app/data (docker-compose volume) ──────────────
+    # data/ 폴더에 아래 파일들을 flat하게 넣어두면 됩니다:
+    #   from_metrics_500m_intracity_classified.parquet
+    #   500m.gpkg, station.gpkg, subway.gpkg
+    #   all_facilities.geoparquet
+    #   from_metrics_500m_intracity.parquet
+    #   od_500m_intracity.parquet
+    #   deficit_ref_sgg.csv  (optional)
+    DATA_ROOT = Path(_DATA_ROOT_ENV)
+    ROOT_OUT  = DATA_ROOT
 
-GRID_PATH = DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\01-전처리\02_routing\00_grid\500m.gpkg"
-STATION_PATH = DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\02-삽도자료\01_재료\station.gpkg"
-SUBWAY_PATH = DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\02-삽도자료\01_재료\subway.gpkg"
-FAC_PATH = pick_first_existing_path(
-    DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\01-전처리\02_routing\01_intercity\02_500m\all_facilities.geoparquet",
-    DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\01-전처리\02_routing\01_intercity\02_500m\all_activities.geoparquet",
-)
+    CLASSIFIED_PATH = pick_first_existing_path(
+        DATA_ROOT / "from_metrics_500m_intracity_classified.parquet",
+        DATA_ROOT / "500m_classified.parquet",
+    )
+    GRID_PATH    = DATA_ROOT / "500m.gpkg"
+    STATION_PATH = DATA_ROOT / "station.gpkg"
+    SUBWAY_PATH  = DATA_ROOT / "subway.gpkg"
+    FAC_PATH     = pick_first_existing_path(
+        DATA_ROOT / "all_facilities.geoparquet",
+        DATA_ROOT / "all_activities.geoparquet",
+    )
+    INTRACITY_PATH = pick_first_existing_path(
+        DATA_ROOT / "from_metrics_500m_intracity.parquet",
+        DATA_ROOT / "from_metrics_500m_intracity_classified.parquet",
+    )
+    OD_PATH = pick_first_existing_path(
+        DATA_ROOT / "od_500m_intracity.parquet",
+        DATA_ROOT / "od.parquet",
+    )
+    DEFICIT_REF_NAT_PATH = pick_first_existing_path(
+        DATA_ROOT / "deficit_ref_sgg.csv",
+        DATA_ROOT / "deficit_ref_nat.csv",
+    )
+
+else:
+    # ── 로컬 모드: Dropbox 절대경로 ─────────────────────────────────────────
+    def _pick_dropbox_base() -> Path:
+        for p in [Path(r"E:\Dropbox"), Path(r"C:\Users\82102\Dropbox"), Path.home() / "Dropbox"]:
+            if p.exists():
+                return p
+        return Path(r"C:\Users\82102\Dropbox")
+
+    _DB    = _pick_dropbox_base()
+    _PAPER = _DB / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단"
+    _RAW   = _PAPER / r"03-분석자료\01-기초자료\01-전처리\02_routing\02_intracity\02_500m"
+    _VIZ   = _PAPER / r"03-분석자료\01-기초자료\02-삽도자료"
+
+    ROOT_OUT = _PAPER / r"03-분석자료\01-기초자료\02-삽도자료\02_학회자료\01_교통학회"
+
+    CLASSIFIED_PATH = pick_first_existing_path(
+        _RAW / "from_metrics_500m_intracity_classified.parquet",
+        _RAW / "500m_classified.parquet",
+    )
+    GRID_PATH    = _PAPER / r"03-분석자료\01-기초자료\01-전처리\02_routing\00_grid\500m.gpkg"
+    STATION_PATH = _VIZ / r"01_재료\station.gpkg"
+    SUBWAY_PATH  = _VIZ / r"01_재료\subway.gpkg"
+    FAC_PATH     = pick_first_existing_path(
+        _RAW / "all_facilities.geoparquet",
+        _RAW / "all_activities.geoparquet",
+    )
+    INTRACITY_PATH = pick_first_existing_path(
+        _RAW / "from_metrics_500m_intracity.parquet",
+        _RAW / "from_metrics_500m_intracity_classified.parquet",
+    )
+    OD_PATH = pick_first_existing_path(
+        _RAW / "od_500m_intracity.parquet",
+        _RAW / "od.parquet",
+    )
+    DEFICIT_REF_NAT_PATH = pick_first_existing_path(
+        _PAPER / r"01-학회자료\01_교통학회\03_분석결과\deficit_ref_sgg.csv",
+        _PAPER / r"03-분석자료\01-기초자료\deficit_ref_sgg.csv",
+    )
 
 CACHE_DIR = ROOT_OUT / "dashboard_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-CACHE_GRID = CACHE_DIR / "grid_dashboard_5179.geoparquet"
+CACHE_GRID        = CACHE_DIR / "grid_dashboard_5179.geoparquet"
 CACHE_GRID_SIMPLE = CACHE_DIR / "grid_dashboard_simple_5179.geoparquet"
-CACHE_SGG = CACHE_DIR / "sgg_dashboard_5179.geoparquet"
-CACHE_STATION = CACHE_DIR / "station_5179.geoparquet"
-CACHE_SUBWAY = CACHE_DIR / "subway_5179.geoparquet"
-CACHE_FAC = CACHE_DIR / "facilities_5179.geoparquet"
-CACHE_TS = CACHE_DIR / "grid_timeseries.parquet"
-CACHE_IDX       = CACHE_DIR / "grid_index_points_5179.parquet"
-CACHE_CELL_DATA = CACHE_DIR / "cell_detail_data.parquet"
+CACHE_SGG         = CACHE_DIR / "sgg_dashboard_5179.geoparquet"
+CACHE_STATION     = CACHE_DIR / "station_5179.geoparquet"
+CACHE_SUBWAY      = CACHE_DIR / "subway_5179.geoparquet"
+CACHE_FAC         = CACHE_DIR / "facilities_5179.geoparquet"
+CACHE_TS          = CACHE_DIR / "grid_timeseries.parquet"
+CACHE_IDX         = CACHE_DIR / "grid_index_points_5179.parquet"
+CACHE_CELL_DATA   = CACHE_DIR / "cell_detail_data.parquet"
 
-# 셀 클릭 상세 소스 (시계열 + car 지표)
-INTRACITY_PATH = pick_first_existing_path(
-    DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\01-전처리\02_routing\01_intercity\02_500m\from_metrics_500m_intracity.parquet",
-    DROPBOX_BASE / r"01-대학원\02-Paper Work\01-개인연구\202603_격자 단위 다양한 시설 대중교통 접근성 결핍 진단\03-분석자료\01-기초자료\01-전처리\02_routing\01_intercity\02_500m\from_metrics_500m_intracity_classified.parquet",
-)
-
-# 시군구별 GeoJSON + 색상 정보 미리 직렬화해두는 캐시 폴더
-CACHE_GEOJSON_DIR = CACHE_DIR / "geojson_tiles"
-# 정적 레이어 GeoJSON 캐시
-CACHE_STATION_JSON = CACHE_GEOJSON_DIR / "station.json"
-CACHE_SUBWAY_JSON  = CACHE_GEOJSON_DIR / "subway.json"
-# 시설은 타입별로 분리 (문자열 템플릿)
-CACHE_FAC_JSON_TPL = str(CACHE_GEOJSON_DIR / "fac_{ftype}.json")
-
+CACHE_GEOJSON_DIR    = CACHE_DIR / "geojson_tiles"
+CACHE_STATION_JSON   = CACHE_GEOJSON_DIR / "station.json"
+CACHE_SUBWAY_JSON    = CACHE_GEOJSON_DIR / "subway.json"
+CACHE_FAC_JSON_TPL   = str(CACHE_GEOJSON_DIR / "fac_{ftype}.json")
+CACHE_FACILITY_ACCESS = CACHE_DIR / "grid_facility_access.parquet"
 
 # =========================================================
 # 상수 / 스타일
 # =========================================================
 PLOT_CRS = "EPSG:5179"
-WEB_CRS = "EPSG:4326"
+WEB_CRS  = "EPSG:4326"
 
-GRID_ID_COL = "GRID_500M_"
+GRID_ID_COL   = "GRID_500M_"
 GRID_JOIN_COL = "from_id"
-SGG_CODE_COL = "from_sgg_key"
-SGG_NAME_COL = "from_sgg"
+SGG_CODE_COL  = "from_sgg_key"
+SGG_NAME_COL  = "from_sgg"
 
 FAC_KIND_COL = "facility_kind"
 FAC_TYPE_COL = "facility_type"
 FAC_DEPT_COL = "department"
 
 TIME_SLOTS = ["08", "10", "12", "14", "16", "18", "20", "22"]
-COV_COLS = [f"{t}_coverage" for t in TIME_SLOTS]
-MAI_COLS = [f"{t}_mai" for t in TIME_SLOTS]
+COV_COLS   = [f"{t}_coverage" for t in TIME_SLOTS]
+MAI_COLS   = [f"{t}_mai"      for t in TIME_SLOTS]
 
-LAYER_LABEL_TO_KEY = {
-    "F(s)": "fs",
-    "F(d)": "fd",
-    "T(c)": "tc",
-    "T(f)": "tf",
-    "Population": "pop",
+OD_FACILITY_COLS = ["pharmacy", "grocery", "library", "park", "public", "m1", "m2", "m3", "m4", "m5", "m6"]
+OD_FACILITY_LABELS = {
+    "pharmacy": "Pharmacy",
+    "grocery":  "Grocery",
+    "library":  "Library",
+    "park":     "Park",
+    "public":   "Public service",
+    "m1":       "Primary care",       # 가정의학과, 내과, 소아청소년과
+    "m2":       "Rehab & ortho",      # 정형외과, 재활의학과, 마취통증의학과
+    "m3":       "Specialty clinic",   # 안과, 이비인후과, 피부과, 비뇨기, 신경과, 산부인과
+    "m4":       "Mental health",      # 정신건강의학과
+    "m5":       "Dental",             # 치과 계열
+    "m6":       "Korean medicine",    # 한방 계열
 }
+
+# m2~m6을 "Specialist care"로 묶어 표시 (논문 기준: 하나라도 접근 가능하면 accessible)
+# 세부 과목은 inaccessible 시 토글로 확인
+SPECIALIST_COLS  = ["m2", "m3", "m4", "m5", "m6"]
+SPECIALIST_LABEL = "Specialist care"
+SPECIALIST_DETAIL_LABELS = {
+    "m2": "Rehab & ortho",
+    "m3": "Specialty clinic",
+    "m4": "Mental health",
+    "m5": "Dental",
+    "m6": "Korean medicine",
+}
+# 패널/툴팁에서 실제로 표시할 시설 순서 (m2~m6 → specialist 하나로)
+DISPLAY_FAC_COLS   = ["park", "library", "m1", "specialist", "grocery", "public", "pharmacy"]
+DISPLAY_FAC_LABELS = {
+    "park":       "Park",
+    "library":    "Library",
+    "m1":         "Primary care",
+    "specialist": SPECIALIST_LABEL,
+    "grocery":    "Grocery",
+    "public":     "Public service",
+    "pharmacy":   "Pharmacy",
+}
+
+# 시설별 Coverage 접근 기준시간 (분) — 국토부 제2차 국가도시재생기본방침 기준
+FAC_COV_THRESH = {
+    "park":     15, "library":  15,
+    "m1":       10, "m2":       15, "m3":       15,
+    "m4":       15, "m5":       15, "m6":       15,
+    "grocery":  10, "public":   15, "pharmacy": 10,
+}
+# MAI는 항상 15분 기준 (출발지에서 15분 내 도달 가능한 to_id 중 최다 시설 그리드)
+MAI_THRESH = 15
+
+LAYER_LABEL_TO_KEY = {"F(s)": "fs", "F(d)": "fd", "T(c)": "tc", "T(f)": "tf", "Population": "pop"}
 LAYER_KEY_TO_LABEL = {v: k for k, v in LAYER_LABEL_TO_KEY.items()}
 LAYER_HELP = {
     "F(s)": "Facility siting / sub-optimal location problem",
@@ -126,99 +203,73 @@ LAYER_HELP = {
     "Population": "Population share or density",
 }
 
+BASE_MAP_KEYS   = ["pop", "coverage", "mai"]
+BASE_MAP_LABELS = {"pop": "Population", "coverage": "Coverage (avg.)", "mai": "MAI (avg.)"}
+
+# ── 컬러맵 (요청 반영) ────────────────────────────
 CMAPS = {
-    "fs": "BuPu",
-    "fd": "GnBu",
-    "tc": "RdPu",
-    "tf": "YlOrBr",
-    "pop": "Reds",
+    "fs":       "RdPu",
+    "fd":       "BuPu",
+    "tc":       "PuRd",
+    "tf":       "YlOrBr",
+    "pop":      "Reds",      # ← 요청: Reds
+    "coverage": "YlGnBu",    # ← 요청: YlGnBu
+    "mai":      "BuPu",      # ← 요청: BuPu
 }
 
+# 결핍 격자 테두리 색상 (유형별 구분, fill 없음)
+DEFICIT_COLORS = {
+    "fs": "#E53935",   # 빨강 (이미지 좌상단)
+    "fd": "#F4A100",   # 골드/주황 (이미지 우상단)
+    "tc": "#7B1FA2",   # 보라 (이미지 좌하단)
+    "tf": "#00BCD4",   # 시안 (격자색과 구별되는 밝은 청록)
+}
+DEFICIT_LABELS = {"fs": "F(s)", "fd": "F(d)", "tc": "T(c)", "tf": "T(f)"}
+
 FACILITY_COLORS = {
-    "park": "#66BB6A",
-    "library": "#42A5F5",
-    "m1": "#EF5350",
-    "m2": "#AB47BC",
-    "grocery": "#FFA726",
-    "public": "#26C6DA",
-    "pharmacy": "#EC407A",
+    "park":     "#43A047", "library": "#1E88E5",
+    "m1":       "#E53935", "m2":      "#8E24AA",
+    "grocery":  "#FB8C00", "public":  "#00ACC1",
+    "pharmacy": "#D81B60",
 }
 FACILITY_LABELS_EN = {
-    "park": "Park",
-    "library": "Library",
-    "m1": "Primary care",
-    "m2": "Specialist outpatient",
-    "grocery": "Grocery",
-    "public": "Public service",
+    "park":     "Park",
+    "library":  "Library",
+    "m1":       "Primary care",
+    "m2":       "Specialist care",
+    "grocery":  "Grocery",
+    "public":   "Public service",
     "pharmacy": "Pharmacy",
 }
 FACILITY_ORDER = ["park", "library", "m1", "m2", "grocery", "public", "pharmacy"]
 
 MED_GROUP_MAP_RAW = {
-    "가정의학과": "m1",
-    "내과": "m1",
-    "소아청소년과": "m1",
-
-    "정형외과": "m2",
-    "재활의학과": "m2",
-    "마취통증의학과": "m2",
-
-    "안과": "m3",
-    "이비인후과": "m3",
-    "피부과": "m3",
-    "비뇨의학과": "m3",
-    "신경과": "m3",
-    "산부인과": "m3",
-
+    "가정의학과": "m1", "내과": "m1", "소아청소년과": "m1",
+    "정형외과": "m2", "재활의학과": "m2", "마취통증의학과": "m2",
+    "안과": "m3", "이비인후과": "m3", "피부과": "m3",
+    "비뇨의학과": "m3", "신경과": "m3", "산부인과": "m3",
     "정신건강의학과": "m4",
-
-    "치과": "m5",
-    "통합치의학과": "m5",
-    "소아치과": "m5",
-    "치과교정과": "m5",
-    "치과보존과": "m5",
-    "치과보철과": "m5",
-    "치주과": "m5",
-    "구강내과": "m5",
-
-    "예방치과": "m8",
-    "영상치의학과": "m8",
-    "구강병리과": "m8",
-    "구강악안면외과": "m8",
-
-    "사상체질과": "m6",
-    "침구과": "m6",
-    "한방내과": "m6",
-    "한방부인과": "m6",
-    "한방소아과": "m6",
-    "한방신경정신과": "m6",
-    "한방안·이비인후·피부과": "m6",
-    "한방재활의학과": "m6",
-
-    "한방응급": "m7",
-    "외과": "m7",
-    "신경외과": "m7",
-    "심장혈관흉부외과": "m7",
-    "응급의학과": "m7",
-    "결핵과": "m7",
-    "방사선종양학과": "m7",
-    "핵의학과": "m7",
-    "병리과": "m7",
-    "영상의학과": "m7",
-    "진단검사의학과": "m7",
-    "예방의학과": "m7",
-    "직업환경의학과": "m7",
-    "성형외과": "m7",
+    "치과": "m5", "통합치의학과": "m5", "소아치과": "m5",
+    "치과교정과": "m5", "치과보존과": "m5", "치과보철과": "m5",
+    "치주과": "m5", "구강내과": "m5",
+    "예방치과": "m8", "영상치의학과": "m8", "구강병리과": "m8", "구강악안면외과": "m8",
+    "사상체질과": "m6", "침구과": "m6", "한방내과": "m6",
+    "한방부인과": "m6", "한방소아과": "m6", "한방신경정신과": "m6",
+    "한방안·이비인후·피부과": "m6", "한방재활의학과": "m6",
+    "한방응급": "m7", "외과": "m7", "신경외과": "m7",
+    "심장혈관흉부외과": "m7", "응급의학과": "m7", "결핵과": "m7",
+    "방사선종양학과": "m7", "핵의학과": "m7", "병리과": "m7",
+    "영상의학과": "m7", "진단검사의학과": "m7", "예방의학과": "m7",
+    "직업환경의학과": "m7", "성형외과": "m7",
 }
-MED_ALLOWED_RAW = {"m1", "m2", "m3", "m4", "m5", "m6"}
+MED_ALLOWED_RAW    = {"m1", "m2", "m3", "m4", "m5", "m6"}
 MED_SPECIALIZED_RAW = {"m2", "m3", "m4", "m5", "m6"}
 
-COV_LINE_COLOR = "#7B2CBF"
-MAI_LINE_COLOR = "#9CCC65"
+COV_LINE_COLOR = "#5C6BC0"
+MAI_LINE_COLOR = "#26A69A"
 
 POP_MAP_MODE = "share"
-GRID_ZOOM_THRESHOLD = 11
-MAP_HEIGHT = 560
+MAP_HEIGHT   = 560
 
 
 # =========================================================
@@ -230,371 +281,211 @@ def normalize_code_series(s: pd.Series) -> pd.Series:
     out = out.replace({"nan": np.nan, "None": np.nan, "": np.nan})
     return out
 
-
 def normalize_str_series(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip()
 
-
 def normalize_sgg_code(code) -> str:
-    """sgg_code → 정수 문자열 ("23520.0" → "23520")."""
-    try:
-        return str(int(float(str(code).strip())))
-    except Exception:
-        return str(code).strip()
-
+    try:    return str(int(float(str(code).strip())))
+    except: return str(code).strip()
 
 def parse_deficit_tokens(val) -> Set[str]:
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return set()
-
     if isinstance(val, (list, tuple, set)):
         raw = list(val)
     else:
         s = str(val).strip()
-        if s in ["", "[]", "{}"]:
-            return set()
+        if s in ["", "[]", "{}"]: return set()
         try:
             obj = json.loads(s)
             raw = obj if isinstance(obj, list) else [obj]
-        except Exception:
+        except:
             raw = re.findall(r"[FfTt]\([sScCdDfF]\)", s)
-
     out = set()
     for x in raw:
         t = str(x).strip().lower()
-        if t == "f(s)":
-            out.add("F(s)")
-        elif t == "f(d)":
-            out.add("F(d)")
-        elif t == "t(c)":
-            out.add("T(c)")
-        elif t == "t(f)":
-            out.add("T(f)")
+        if   t == "f(s)": out.add("F(s)")
+        elif t == "f(d)": out.add("F(d)")
+        elif t == "t(c)": out.add("T(c)")
+        elif t == "t(f)": out.add("T(f)")
     return out
 
-
 def parse_department_list(val) -> List[str]:
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return []
-
-    if isinstance(val, list):
-        return [str(x).strip() for x in val if str(x).strip()]
-
+    if val is None or (isinstance(val, float) and np.isnan(val)): return []
+    if isinstance(val, list): return [str(x).strip() for x in val if str(x).strip()]
     s = str(val).strip()
-    if s in ["", "[]", "nan", "None"]:
-        return []
-
+    if s in ["", "[]", "nan", "None"]: return []
     try:
         obj = json.loads(s)
-        if isinstance(obj, list):
-            return [str(x).strip() for x in obj if str(x).strip()]
-    except Exception:
-        pass
-
+        if isinstance(obj, list): return [str(x).strip() for x in obj if str(x).strip()]
+    except: pass
     try:
         obj = ast.literal_eval(s)
-        if isinstance(obj, list):
-            return [str(x).strip() for x in obj if str(x).strip()]
-    except Exception:
-        pass
-
+        if isinstance(obj, list): return [str(x).strip() for x in obj if str(x).strip()]
+    except: pass
     s2 = s.strip("[]")
     parts = [p.strip().strip('"').strip("'") for p in s2.split(",")]
     return [p for p in parts if p]
 
-
 def normalize_facility_type_from_row(row: pd.Series) -> str:
-    kind = str(row.get(FAC_KIND_COL, "")).strip()
-    ftype = str(row.get(FAC_TYPE_COL, "")).strip()
-    kind_l = kind.lower()
-    ftype_l = ftype.lower()
-
-    if "공원" in kind or "park" in kind_l or "공원" in ftype or "park" in ftype_l:
-        return "park"
-    if "도서관" in kind or "library" in kind_l or "도서관" in ftype or "library" in ftype_l:
-        return "library"
-    if "약국" in kind or "pharmacy" in kind_l or "약국" in ftype or "pharmacy" in ftype_l:
-        return "pharmacy"
-    if (
-        "식료품" in kind or "마트" in kind or "시장" in kind or "편의점" in kind or
-        "grocery" in kind_l or "market" in kind_l or "mart" in kind_l or "supermarket" in kind_l or
-        "식료품" in ftype or "마트" in ftype or "시장" in ftype or "편의점" in ftype
-    ):
-        return "grocery"
-    if (
-        "행정" in kind or "공공" in kind or "주민센터" in kind or "행정서비스" in kind or
-        "행정" in ftype or "공공" in ftype or "주민센터" in ftype or "행정서비스" in ftype
-    ):
-        return "public"
-
-    dept_list = parse_department_list(row.get(FAC_DEPT_COL))
+    kind = str(row.get(FAC_KIND_COL, "")).strip(); ftype = str(row.get(FAC_TYPE_COL, "")).strip()
+    kl = kind.lower(); fl = ftype.lower()
+    if "공원" in kind or "park" in kl or "공원" in ftype or "park" in fl: return "park"
+    if "도서관" in kind or "library" in kl or "도서관" in ftype or "library" in fl: return "library"
+    if "약국" in kind or "pharmacy" in kl or "약국" in ftype or "pharmacy" in fl: return "pharmacy"
+    if ("식료품" in kind or "마트" in kind or "시장" in kind or "편의점" in kind or
+        "grocery" in kl or "market" in kl or "mart" in kl or "supermarket" in kl or
+        "식료품" in ftype or "마트" in ftype or "시장" in ftype or "편의점" in ftype): return "grocery"
+    if ("행정" in kind or "공공" in kind or "주민센터" in kind or "행정서비스" in kind or
+        "행정" in ftype or "공공" in ftype or "주민센터" in ftype or "행정서비스" in ftype): return "public"
+    dept_list  = parse_department_list(row.get(FAC_DEPT_COL))
     raw_groups = [MED_GROUP_MAP_RAW[d] for d in dept_list if d in MED_GROUP_MAP_RAW]
     raw_groups = [g for g in raw_groups if g in MED_ALLOWED_RAW]
-
-    if "m1" in raw_groups:
-        return "m1"
-    if any(g in MED_SPECIALIZED_RAW for g in raw_groups):
+    if "m1" in raw_groups: return "m1"
+    if any(g in MED_SPECIALIZED_RAW for g in raw_groups): return "m2"
+    if ("의료" in kind or "병원" in kind or "의원" in kind or "치과" in kind or "한의원" in kind or
+        "의료" in ftype or "병원" in ftype or "의원" in ftype or "치과" in ftype or "한의원" in ftype):
+        if any(x in ftype for x in ["보건소", "보건지소", "보건진료소", "보건의료원"]): return "m1"
         return "m2"
-
-    if (
-        "의료" in kind or "병원" in kind or "의원" in kind or "치과" in kind or "한의원" in kind or
-        "의료" in ftype or "병원" in ftype or "의원" in ftype or "치과" in ftype or "한의원" in ftype
-    ):
-        if any(x in ftype for x in ["보건소", "보건지소", "보건진료소", "보건의료원"]):
-            return "m1"
-        return "m2"
-
     return "exclude"
 
 
 class PowerNormSafe(PowerNorm):
     pass
 
-
 def compute_group_norm_from_series(values: pd.Series, gamma: float = 0.55, force_zero_min: bool = True):
     vals = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     vals = vals[vals > 0]
-    if len(vals) == 0:
-        vmin, vmax = 0.0, 1.0
-    else:
-        vmin = 0.0 if force_zero_min else float(vals.min())
-        vmax = float(vals.max())
-        if vmax <= vmin:
-            vmax = vmin + 1e-9
-    norm = PowerNormSafe(gamma=gamma, vmin=vmin, vmax=vmax)
-    return vmin, vmax, norm
-
+    vmin, vmax = (0.0, 1.0) if len(vals) == 0 else (0.0 if force_zero_min else float(vals.min()), float(vals.max()))
+    if vmax <= vmin: vmax = vmin + 1e-9
+    return vmin, vmax, PowerNormSafe(gamma=gamma, vmin=vmin, vmax=vmax)
 
 def compute_group_pop_norm(values: pd.Series, share_mode: bool = True):
     vals = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    if len(vals) == 0:
-        vmin, vmax = 0.0, 1.0
-    else:
-        vmin = 0.0 if share_mode else float(vals.min())
-        vmax = float(vals.max())
-        if vmax <= vmin:
-            vmax = vmin + 1e-9
+    vmin, vmax = (0.0, 1.0) if len(vals) == 0 else (0.0 if share_mode else float(vals.min()), float(vals.max()))
+    if vmax <= vmin: vmax = vmin + 1e-9
     norm = PowerNormSafe(gamma=0.6, vmin=vmin, vmax=vmax) if share_mode else Normalize(vmin=vmin, vmax=vmax)
     return vmin, vmax, norm
 
-
-def get_grid_fill_color(value: float, cmap_name: str, norm) -> Optional[str]:
-    if pd.isna(value) or value <= 0:
-        return None
-    cmap = matplotlib.colormaps[cmap_name]
-    rgba = cmap(norm(value))
-    return mcolors.to_hex(rgba, keep_alpha=False)
-
+def compute_continuous_norm(values: pd.Series, gamma: float = 0.55):
+    vals = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    vals = vals[vals > 0]
+    vmin = 0.0; vmax = float(vals.max()) if len(vals) else 100.0
+    if vmax <= vmin: vmax = 100.0
+    return vmin, vmax, PowerNormSafe(gamma=gamma, vmin=vmin, vmax=vmax)
 
 def gradient_css_from_cmap(cmap_name: str) -> str:
-    cmap = matplotlib.colormaps[cmap_name]
-    stops = []
-    for p in np.linspace(0, 1, 7):
-        stops.append(f"{mcolors.to_hex(cmap(p))} {int(p * 100)}%")
+    cmap  = matplotlib.colormaps[cmap_name]
+    stops = [f"{mcolors.to_hex(cmap(p))} {int(p*100)}%" for p in np.linspace(0, 1, 7)]
     return ", ".join(stops)
 
-
-def make_pretty_ticks(vmin: float, vmax: float, n: int = 5) -> np.ndarray:
-    if vmax <= vmin:
-        return np.array([vmin, vmax + 1e-9])
+def make_pretty_ticks(vmin, vmax, n=5):
+    if vmax <= vmin: return np.array([vmin, vmax + 1e-9])
     return np.linspace(vmin, vmax, n)
 
-
-def choose_tick_decimals(vmin: float, vmax: float) -> int:
+def choose_tick_decimals(vmin, vmax):
     span = abs(vmax - vmin)
-    if span < 0.05:
-        return 3
-    if span < 0.5:
-        return 2
-    if span < 5:
-        return 1
+    if span < 0.05: return 3
+    if span < 0.5:  return 2
+    if span < 5:    return 1
     return 0
 
-
-def make_streamlit_colorbar_html(cmap_name: str, norm, title: str, percent: bool = True) -> str:
-    vmin = float(norm.vmin)
-    vmax = float(norm.vmax)
-    ticks = make_pretty_ticks(vmin, vmax, n=5)
-    dec = choose_tick_decimals(vmin, vmax)
-
-    labels = []
-    for t in ticks:
-        labels.append(f"<div style='text-align:center;font-size:12px;color:#333;'>{t:.{dec}f}{'%' if percent else ''}</div>")
-
-    return f"""
-    <div style='width:100%;margin-top:4px;'>
-      <div style='font-size:13px;font-weight:600;margin-bottom:4px;'>{title}</div>
-      <div style='height:10px;border:1px solid #333;background: linear-gradient(to right, {gradient_css_from_cmap(cmap_name)});'></div>
-      <div style='display:grid;grid-template-columns: repeat(5, 1fr);margin-top:3px;'>{''.join(labels)}</div>
-    </div>
-    """
-
-
-def build_feature_legend_html() -> str:
-    items = []
-    for key in FACILITY_ORDER:
-        color = FACILITY_COLORS[key]
-        label = FACILITY_LABELS_EN[key]
-        items.append(
-            f"<div style='display:flex;align-items:center;gap:6px;margin-bottom:4px;'>"
-            f"<span style='width:10px;height:10px;border-radius:50%;display:inline-block;background:{color};border:1px solid white;'></span>"
-            f"<span style='font-size:12px;'>{label}</span></div>"
-        )
-    return "".join(items)
-
-
-def build_metric_help_html() -> str:
-    rows = []
-    for label in ["F(s)", "F(d)", "T(c)", "T(f)"]:
-        rows.append(f"<li><b>{label}</b>: {LAYER_HELP[label]}</li>")
-    return (
-        '<ul style="margin-top:0; margin-bottom:0; padding-left:18px; font-size:12px;">'
-        + "".join(rows)
-        + "</ul>"
-    )
-
-
-def to_json_safe_value(x):
-    if isinstance(x, np.ndarray):
-        return x.tolist()
-    if isinstance(x, (set, tuple)):
-        return list(x)
-    if isinstance(x, np.generic):
-        return x.item()
-    if pd.isna(x):
-        return None
-    return x
-
-
-def make_json_safe_geojson_gdf(gdf: gpd.GeoDataFrame, cols: List[str]) -> gpd.GeoDataFrame:
-    keep_cols = [c for c in cols if c in gdf.columns] + ["geometry"]
-    out = gdf[keep_cols].copy()
-    for c in keep_cols:
-        if c != "geometry":
-            out[c] = out[c].apply(to_json_safe_value)
-    return out
-
-
-@st.cache_data(show_spinner=False, max_entries=128)
-def _cached_geojson(gdf_hash: str, geojson_str: str) -> str:
-    """GeoJSON 문자열을 캐시. gdf_hash는 캐시 키 역할."""
-    return geojson_str
-
-
-def gdf_to_cached_json(gdf: gpd.GeoDataFrame, cols: List[str]) -> str:
-    """컬럼을 필터링하고 WGS84로 변환 후 JSON 직렬화. 결과를 캐시."""
-    safe = make_json_safe_geojson_gdf(gdf, cols).to_crs(WEB_CRS)
-    key = f"{len(safe)}_{list(safe.columns)}_{cols}"
-    return _cached_geojson(key, safe.to_json())
-
-
-def bbox_subset(gdf: gpd.GeoDataFrame, bounds_5179):
-    if gdf.empty or bounds_5179 is None:
-        return gdf
-    minx, miny, maxx, maxy = bounds_5179
-    try:
-        return gdf.cx[minx:maxx, miny:maxy]
-    except Exception:
-        return gdf[gdf.intersects(box(minx, miny, maxx, maxy))]
-
-
-def get_bbox_from_bounds(bounds_dict) -> Optional[Tuple[float, float, float, float]]:
-    if not bounds_dict:
-        return None
-    try:
-        south = bounds_dict["_southWest"]["lat"]
-        west = bounds_dict["_southWest"]["lng"]
-        north = bounds_dict["_northEast"]["lat"]
-        east = bounds_dict["_northEast"]["lng"]
-        bbox4326 = box(west, south, east, north)
-        bbox5179 = gpd.GeoSeries([bbox4326], crs=WEB_CRS).to_crs(PLOT_CRS).iloc[0].bounds
-        return bbox5179
-    except Exception:
-        return None
-
-
-def find_clicked_cell(lat: float, lon: float, grid_bbox: gpd.GeoDataFrame) -> Optional[str]:
-    if lat is None or lon is None or grid_bbox.empty:
-        return None
-    pt = gpd.GeoSeries([Point(lon, lat)], crs=WEB_CRS).to_crs(PLOT_CRS).iloc[0]
-    hit = grid_bbox[grid_bbox.contains(pt)]
-    if hit.empty:
-        return None
-    return hit.iloc[0][GRID_JOIN_COL]
-
-
-# =========================================================
-# 캐시 빌드 / 로드
-# =========================================================
 def build_dashboard_cache(progress_cb=None) -> Dict[str, str]:
-    """progress_cb(step, total, msg) 콜백."""
     metrics = pd.read_parquet(CLASSIFIED_PATH).copy()
     metrics[GRID_JOIN_COL] = normalize_str_series(metrics[GRID_JOIN_COL])
-    metrics[SGG_CODE_COL] = normalize_code_series(metrics[SGG_CODE_COL])
-    metrics[SGG_NAME_COL] = normalize_str_series(metrics[SGG_NAME_COL])
+    metrics[SGG_CODE_COL]  = normalize_code_series(metrics[SGG_CODE_COL])
+    metrics[SGG_NAME_COL]  = normalize_str_series(metrics[SGG_NAME_COL])
     metrics["pop"] = pd.to_numeric(metrics["pop"], errors="coerce").fillna(0)
-
     for c in COV_COLS + MAI_COLS:
         metrics[c] = pd.to_numeric(metrics[c], errors="coerce")
+    for c in ["avg_coverage", "avg_mai", "cv_coverage", "cv_mai", "car_coverage", "car_mai"]:
+        if c in metrics.columns:
+            metrics[c] = pd.to_numeric(metrics[c], errors="coerce")
 
     metrics["_nat_tokens"] = metrics["nat_deficit"].apply(parse_deficit_tokens)
     metrics["_sgg_tokens"] = metrics["sgg_deficit"].apply(parse_deficit_tokens)
-
     for tok, key in {"F(s)": "fs", "F(d)": "fd", "T(c)": "tc", "T(f)": "tf"}.items():
         metrics[f"nat_has_{key}"] = metrics["_nat_tokens"].apply(lambda s: tok in s)
         metrics[f"sgg_has_{key}"] = metrics["_sgg_tokens"].apply(lambda s: tok in s)
 
-    metrics["sgg_pop_total"] = metrics.groupby(SGG_CODE_COL)["pop"].transform("sum")
-    metrics["national_pop_total"] = float(metrics["pop"].sum())
+    # ── national 기준 결핍 CSV 보강 ──────────────────────────────────────────
+    # deficit_ref_sgg.csv 가 있으면 nat_has_* 컬럼을 CSV 값으로 덮어씀
+    # 예상 컬럼: from_id (or grid_id), nat_has_fs, nat_has_fd, nat_has_tc, nat_has_tf
+    if DEFICIT_REF_NAT_PATH.exists():
+        try:
+            ref = pd.read_csv(DEFICIT_REF_NAT_PATH)
+            # from_id 컬럼 탐색 (다양한 이름 허용)
+            id_col = next((c for c in ref.columns if c.lower() in ("from_id","grid_id","id","from_sgg_key")), None)
+            if id_col:
+                ref[id_col] = ref[id_col].astype(str).str.strip()
+                # nat_has_* 컬럼이 있으면 덮어쓰기, bool/int 통일
+                nat_cols = [c for c in ref.columns if c.startswith("nat_has_") and c in [f"nat_has_{k}" for k in ["fs","fd","tc","tf"]]]
+                if nat_cols:
+                    ref_sub = ref[[id_col] + nat_cols].rename(columns={id_col: GRID_JOIN_COL})
+                    for c in nat_cols:
+                        ref_sub[c] = ref_sub[c].astype(bool)
+                    # metrics에서 기존 nat_has_* 제거 후 merge
+                    drop_cols = [c for c in nat_cols if c in metrics.columns]
+                    metrics = metrics.drop(columns=drop_cols)
+                    metrics = metrics.merge(ref_sub, on=GRID_JOIN_COL, how="left")
+                    for c in nat_cols:
+                        if c in metrics.columns:
+                            metrics[c] = metrics[c].fillna(False).astype(bool)
+                        else:
+                            metrics[c] = False
+        except Exception:
+            import traceback; traceback.print_exc()
 
-    metrics["nat_pop_map"] = np.where(metrics["national_pop_total"] > 0, metrics["pop"] / metrics["national_pop_total"] * 100.0, 0.0)
-    metrics["sgg_pop_map"] = np.where(metrics["sgg_pop_total"] > 0, metrics["pop"] / metrics["sgg_pop_total"] * 100.0, 0.0)
+    metrics["sgg_pop_total"]      = metrics.groupby(SGG_CODE_COL)["pop"].transform("sum")
+    metrics["national_pop_total"] = float(metrics["pop"].sum())
+    metrics["nat_pop_map"]   = np.where(metrics["national_pop_total"] > 0, metrics["pop"] / metrics["national_pop_total"] * 100.0, 0.0)
+    metrics["sgg_pop_map"]   = np.where(metrics["sgg_pop_total"] > 0,      metrics["pop"] / metrics["sgg_pop_total"] * 100.0,      0.0)
     metrics["local_pop_map"] = metrics["sgg_pop_map"]
 
     for key in ["fs", "fd", "tc", "tf"]:
-        metrics[f"nat_{key}_ratio"] = np.where(
-            metrics[f"nat_has_{key}"] & (metrics["sgg_pop_total"] > 0),
-            metrics["pop"] / metrics["sgg_pop_total"] * 100.0,
-            0.0,
+        metrics[f"nat_{key}_ratio"] = np.where(metrics[f"nat_has_{key}"] & (metrics["sgg_pop_total"] > 0), metrics["pop"] / metrics["sgg_pop_total"] * 100.0, 0.0)
+        metrics[f"sgg_{key}_ratio"] = np.where(metrics[f"sgg_has_{key}"] & (metrics["sgg_pop_total"] > 0), metrics["pop"] / metrics["sgg_pop_total"] * 100.0, 0.0)
+
+    # 시군구 가중 평균
+    def _sgg_wmean(col):
+        return (
+            metrics.assign(_w=metrics[col] * metrics["pop"])
+            .groupby(SGG_CODE_COL).agg(_w=("_w","sum"), pop=("pop","sum"))
+            .assign(v=lambda x: np.where(x["pop"] > 0, x["_w"] / x["pop"], np.nan))["v"]
         )
-        metrics[f"sgg_{key}_ratio"] = np.where(
-            metrics[f"sgg_has_{key}"] & (metrics["sgg_pop_total"] > 0),
-            metrics["pop"] / metrics["sgg_pop_total"] * 100.0,
-            0.0,
-        )
+    if "avg_coverage" in metrics.columns:
+        metrics["sgg_avg_coverage"] = metrics[SGG_CODE_COL].map(_sgg_wmean("avg_coverage"))
+    if "avg_mai" in metrics.columns:
+        metrics["sgg_avg_mai"]      = metrics[SGG_CODE_COL].map(_sgg_wmean("avg_mai"))
 
     grid = gpd.read_file(GRID_PATH)
-    if grid.crs is None:
-        grid = grid.set_crs(epsg=4326)
-    if str(grid.crs) != PLOT_CRS:
-        grid = grid.to_crs(PLOT_CRS)
+    if grid.crs is None: grid = grid.set_crs(epsg=4326)
+    if str(grid.crs) != PLOT_CRS: grid = grid.to_crs(PLOT_CRS)
     grid[GRID_ID_COL] = normalize_str_series(grid[GRID_ID_COL])
     grid = grid[[GRID_ID_COL, "geometry"]].copy()
 
     gdf = grid.merge(metrics, left_on=GRID_ID_COL, right_on=GRID_JOIN_COL, how="inner")
     gdf = gpd.GeoDataFrame(gdf, geometry="geometry", crs=PLOT_CRS)
-    gdf["area_km2"] = gdf.geometry.area / 1_000_000.0
+    gdf["area_km2"]        = gdf.geometry.area / 1_000_000.0
     gdf["pop_density_km2"] = np.where(gdf["area_km2"] > 0, gdf["pop"] / gdf["area_km2"], np.nan)
 
+    # idx_df: sgg_avg 포함해서 저장
     centroid = gdf.geometry.centroid
-    idx_df = pd.DataFrame({
-        GRID_JOIN_COL: gdf[GRID_JOIN_COL],
-        SGG_CODE_COL: gdf[SGG_CODE_COL],
-        SGG_NAME_COL: gdf[SGG_NAME_COL],
-        "x": centroid.x,
-        "y": centroid.y,
-        "pop": gdf["pop"],
-        "avg_coverage": gdf.get("avg_coverage"),
-        "avg_mai": gdf.get("avg_mai"),
-        "cv_coverage": gdf.get("cv_coverage"),
-        "cv_mai": gdf.get("cv_mai"),
-        "car_coverage": gdf.get("car_coverage"),
-        "car_mai": gdf.get("car_mai"),
-    })
-    for c in COV_COLS:
-        idx_df[c] = gdf[c]
-    for c in MAI_COLS:
-        idx_df[c] = gdf[c]
+    idx_cols = {
+        GRID_JOIN_COL: gdf[GRID_JOIN_COL], SGG_CODE_COL: gdf[SGG_CODE_COL], SGG_NAME_COL: gdf[SGG_NAME_COL],
+        "x": centroid.x, "y": centroid.y, "pop": gdf["pop"],
+        "avg_coverage": gdf["avg_coverage"] if "avg_coverage" in gdf.columns else np.nan,
+        "avg_mai":      gdf["avg_mai"]      if "avg_mai"      in gdf.columns else np.nan,
+        "cv_coverage":  gdf["cv_coverage"]  if "cv_coverage"  in gdf.columns else np.nan,
+        "cv_mai":       gdf["cv_mai"]       if "cv_mai"       in gdf.columns else np.nan,
+        "car_coverage": gdf["car_coverage"] if "car_coverage" in gdf.columns else np.nan,
+        "car_mai":      gdf["car_mai"]      if "car_mai"      in gdf.columns else np.nan,
+        "sgg_avg_coverage": gdf["sgg_avg_coverage"] if "sgg_avg_coverage" in gdf.columns else np.nan,
+        "sgg_avg_mai":      gdf["sgg_avg_mai"]      if "sgg_avg_mai"      in gdf.columns else np.nan,
+    }
+    idx_df = pd.DataFrame(idx_cols)
+    for c in COV_COLS: idx_df[c] = gdf[c]
+    for c in MAI_COLS: idx_df[c] = gdf[c]
     idx_df.to_parquet(CACHE_IDX, index=False)
 
     safe_grid_cols = [
@@ -603,35 +494,31 @@ def build_dashboard_cache(progress_cb=None) -> Dict[str, str]:
         "nat_pop_map", "sgg_pop_map", "local_pop_map",
         "nat_fs_ratio", "nat_fd_ratio", "nat_tc_ratio", "nat_tf_ratio",
         "sgg_fs_ratio", "sgg_fd_ratio", "sgg_tc_ratio", "sgg_tf_ratio",
+        "nat_has_fs", "nat_has_fd", "nat_has_tc", "nat_has_tf",
+        "sgg_has_fs", "sgg_has_fd", "sgg_has_tc", "sgg_has_tf",
         "avg_coverage", "avg_mai", "cv_coverage", "cv_mai",
         "car_coverage", "car_mai",
+        "sgg_avg_coverage", "sgg_avg_mai",
         "area_km2", "pop_density_km2",
-        *COV_COLS, *MAI_COLS,
-        "geometry",
+        *COV_COLS, *MAI_COLS, "geometry",
     ]
     safe_grid_cols = [c for c in safe_grid_cols if c in gdf.columns]
-    gdf_safe = gdf[safe_grid_cols].copy()
-
+    gdf_safe   = gdf[safe_grid_cols].copy()
     gdf_simple = gdf_safe.copy()
     gdf_simple["geometry"] = gdf_simple.geometry.simplify(25, preserve_topology=True)
-
-    gdf_safe.to_parquet(CACHE_GRID, index=False)
+    gdf_safe.to_parquet(CACHE_GRID,        index=False)
     gdf_simple.to_parquet(CACHE_GRID_SIMPLE, index=False)
 
     agg_rows = []
     for code, gg in gdf_safe.groupby(SGG_CODE_COL, dropna=True):
-        row = {
-            SGG_CODE_COL: code,
-            SGG_NAME_COL: gg[SGG_NAME_COL].iloc[0],
-            "sgg_pop_total": float(gg["pop"].sum()),
-            "nat_pop_map": float(gg["nat_pop_map"].sum()),
-            "sgg_pop_map": float(gg["sgg_pop_map"].sum()),
-        }
-        for key in ["fs", "fd", "tc", "tf"]:
-            row[f"nat_{key}_ratio"] = float(gg[f"nat_{key}_ratio"].sum())
-            row[f"sgg_{key}_ratio"] = float(gg[f"sgg_{key}_ratio"].sum())
+        row = {SGG_CODE_COL: code, SGG_NAME_COL: gg[SGG_NAME_COL].iloc[0],
+               "sgg_pop_total": float(gg["pop"].sum()),
+               "nat_pop_map": float(gg["nat_pop_map"].sum()),
+               "sgg_pop_map": float(gg["sgg_pop_map"].sum())}
+        for k in ["fs","fd","tc","tf"]:
+            row[f"nat_{k}_ratio"] = float(gg[f"nat_{k}_ratio"].sum())
+            row[f"sgg_{k}_ratio"] = float(gg[f"sgg_{k}_ratio"].sum())
         agg_rows.append(row)
-
     sgg_attr = pd.DataFrame(agg_rows)
     sgg_poly = gdf_safe[[SGG_CODE_COL, "geometry"]].dissolve(by=SGG_CODE_COL).reset_index()
     sgg_poly = sgg_poly.merge(sgg_attr, on=SGG_CODE_COL, how="left")
@@ -639,123 +526,180 @@ def build_dashboard_cache(progress_cb=None) -> Dict[str, str]:
     sgg_poly.to_parquet(CACHE_SGG, index=False)
 
     station = gpd.read_file(STATION_PATH)
-    subway = gpd.read_file(SUBWAY_PATH)
-    fac = gpd.read_parquet(FAC_PATH)
-
-    for layer in [station, subway, fac]:
-        if layer.crs is None:
-            layer.set_crs(epsg=4326, inplace=True)
-
-    if str(station.crs) != PLOT_CRS:
-        station = station.to_crs(PLOT_CRS)
-    if str(subway.crs) != PLOT_CRS:
-        subway = subway.to_crs(PLOT_CRS)
-    if str(fac.crs) != PLOT_CRS:
-        fac = fac.to_crs(PLOT_CRS)
-
+    subway  = gpd.read_file(SUBWAY_PATH)
+    fac     = gpd.read_parquet(FAC_PATH)
+    for lyr in [station, subway, fac]:
+        if lyr.crs is None: lyr.set_crs(epsg=4326, inplace=True)
+    if str(station.crs) != PLOT_CRS: station = station.to_crs(PLOT_CRS)
+    if str(subway.crs)  != PLOT_CRS: subway  = subway.to_crs(PLOT_CRS)
+    if str(fac.crs)     != PLOT_CRS: fac     = fac.to_crs(PLOT_CRS)
     fac["fac_type_norm"] = fac.apply(normalize_facility_type_from_row, axis=1)
     fac = fac[fac["fac_type_norm"].isin(FACILITY_ORDER)].copy()
-
     station.to_parquet(CACHE_STATION, index=False)
-    subway.to_parquet(CACHE_SUBWAY, index=False)
-    fac.to_parquet(CACHE_FAC, index=False)
+    subway.to_parquet(CACHE_SUBWAY,  index=False)
+    fac.to_parquet(CACHE_FAC,        index=False)
 
-    ts_keep = [
-        GRID_JOIN_COL, SGG_CODE_COL, SGG_NAME_COL,
-        "avg_coverage", "avg_mai", "cv_coverage", "cv_mai",
-        "car_coverage", "car_mai",
-        *COV_COLS, *MAI_COLS,
-    ]
+    ts_keep = [GRID_JOIN_COL, SGG_CODE_COL, SGG_NAME_COL,
+               "avg_coverage", "avg_mai", "cv_coverage", "cv_mai", "car_coverage", "car_mai",
+               "sgg_avg_coverage", "sgg_avg_mai",
+               *COV_COLS, *MAI_COLS]
     ts_keep = [c for c in ts_keep if c in metrics.columns]
     metrics[ts_keep].to_parquet(CACHE_TS, index=False)
+
+    # ── OD 기반 시설 접근 가능 여부 (시간대별 Coverage + MAI) ─────────────────
+    if OD_PATH.exists():
+        try:
+            if progress_cb: progress_cb(0, 1, "Computing facility accessibility from OD file...")
+            od = pd.read_parquet(OD_PATH)
+            od["from_id"] = od["from_id"].astype(str).str.strip()
+            od["to_id"]   = od["to_id"].astype(str).str.strip()
+
+            PT_SLOT_COL = {s: f"pt{s}" for s in TIME_SLOTS}
+            PT_SLOT_COL = {s: c for s, c in PT_SLOT_COL.items() if c in od.columns}
+            FAC_COLS    = [c for c in OD_FACILITY_COLS if c in od.columns]
+
+            if not FAC_COLS or not PT_SLOT_COL:
+                raise ValueError(f"Required columns missing. PT: {list(PT_SLOT_COL)}, fac: {FAC_COLS}")
+
+            # ── float32로 통일 (메모리 절약) ──────────────────────
+            for c in PT_SLOT_COL.values():
+                od[c] = od[c].astype(np.float32)
+            for c in FAC_COLS:
+                od[c] = od[c].astype(np.int8)
+
+            # ── Coverage: groupby + transform → from_id별 슬롯×시설 집계 ──
+            # 각 (from_id, slot, fac) 조합에 대해 threshold 내에 시설 존재 여부
+            cov_result_cols = {}
+            for slot, pt_col in PT_SLOT_COL.items():
+                pt_vals = od[pt_col].values
+                for fc in FAC_COLS:
+                    thresh    = FAC_COV_THRESH.get(fc, 15)
+                    col_name  = f"cov_{slot}_{fc}"
+                    # 해당 행이 조건 만족 여부 (0/1)
+                    od[col_name] = ((pt_vals <= thresh) & (od[fc].values > 0)).astype(np.int8)
+                    # from_id 그룹 내 any → max()
+                    cov_result_cols[col_name] = "max"
+
+            # ── 슬롯별 최솟값 PT 계산 ──────────────────────────
+            pt_cols_list = list(PT_SLOT_COL.values())
+            od["_min_pt"] = od[pt_cols_list].min(axis=1).astype(np.float32)
+
+            # ── MAI: 15분 내 to_id 중 최다 시설 (벡터화) ──────
+            within_mask = od["_min_pt"] <= MAI_THRESH
+            od_w = od[within_mask].copy()
+
+            if not od_w.empty:
+                od_w["_n_fac"] = od_w[FAC_COLS].gt(0).sum(axis=1).astype(np.int16)
+                # from_id별 최대 시설 수
+                max_fac = od_w.groupby("from_id")["_n_fac"].transform("max")
+                # 최대 시설 수 & 최소 PT를 동시에 만족하는 행 선택
+                best_mask = od_w["_n_fac"] == max_fac
+                od_best   = od_w[best_mask].copy()
+                # 동점 내 최소 PT 선택
+                min_pt_in_best = od_best.groupby("from_id")["_min_pt"].transform("min")
+                od_best = od_best[od_best["_min_pt"] == min_pt_in_best]
+                # 중복 남아있을 경우 첫 행만
+                od_best = od_best.groupby("from_id", as_index=False).first()
+                od_best = od_best.set_index("from_id")
+
+                # tie 여부: 위에서 best_mask 기준 count > 1이면 tie
+                tie_counts = od_w[best_mask].groupby("from_id")["_min_pt"].count()
+                od_best["mai_is_tie"] = (tie_counts > 1).astype(np.int8)
+                od_best["mai_best_to_id"] = od_best["to_id"]
+                mai_fac_cols = {f"mai_{fc}": od_best[fc].gt(0).astype(np.int8) for fc in FAC_COLS}
+                for col, series in mai_fac_cols.items():
+                    od_best[col] = series
+                mai_df = od_best[["mai_is_tie", "mai_best_to_id"] + [f"mai_{fc}" for fc in FAC_COLS]].reset_index()
+            else:
+                mai_df = pd.DataFrame(columns=["from_id", "mai_is_tie", "mai_best_to_id"] + [f"mai_{fc}" for fc in FAC_COLS])
+
+            # ── Coverage 집계: from_id 그룹별 max ──────────────
+            cov_cols_list = list(cov_result_cols.keys())
+            cov_df = od.groupby("from_id", as_index=False)[cov_cols_list].max()
+
+            # ── 병합 ────────────────────────────────────────────
+            result = cov_df.merge(mai_df, on="from_id", how="left")
+            # MAI 없는 from_id → 0 채우기
+            for fc in FAC_COLS:
+                result[f"mai_{fc}"] = result[f"mai_{fc}"].fillna(0).astype(np.int8)
+            result["mai_is_tie"]    = result["mai_is_tie"].fillna(0).astype(np.int8)
+
+            result.rename(columns={"from_id": GRID_JOIN_COL}, inplace=True)
+            result.to_parquet(CACHE_FACILITY_ACCESS, index=False)
+            if progress_cb: progress_cb(1, 1, f"OD facility cache built ({len(result):,} grids).")
+        except Exception:
+            import traceback; traceback.print_exc()
 
     # ── 정적 GeoJSON 캐시 ──────────────────────────────────
     CACHE_GEOJSON_DIR.mkdir(parents=True, exist_ok=True)
 
     def _write_json_safe(path: Path, data: dict) -> None:
-        """pyogrio/Dropbox 파일 잠금 우회: json 모듈로 직접 쓰기."""
         import tempfile, os, time
         tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
-            # Windows atomic replace (같은 드라이브 내 rename)
             for attempt in range(5):
                 try:
-                    if path.exists():
-                        path.unlink()
-                    os.rename(tmp_path, str(path))
-                    break
+                    if path.exists(): path.unlink()
+                    os.rename(tmp_path, str(path)); break
                 except PermissionError:
                     time.sleep(0.3)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+        except:
+            try: os.unlink(tmp_path)
+            except: pass
             raise
 
     def _gdf_to_geojson_dict(gdf: gpd.GeoDataFrame) -> dict:
-        """GeoDataFrame → GeoJSON dict (pyogrio 미사용)."""
-        features = []
-        for _, row in gdf.iterrows():
-            geom = row.geometry
-            if geom is None or geom.is_empty:
-                continue
-            props = {}
-            for col in gdf.columns:
-                if col == "geometry":
-                    continue
-                val = row[col]
-                if isinstance(val, float) and (val != val):  # NaN
-                    props[col] = None
-                elif hasattr(val, "item"):  # numpy scalar
-                    props[col] = val.item()
-                else:
-                    props[col] = val
-            features.append({
-                "type": "Feature",
-                "geometry": geom.__geo_interface__,
-                "properties": props,
-            })
-        return {"type": "FeatureCollection", "features": features}
+        """iterrows 없이 벡터화 변환. bool/numpy 타입 자동 직렬화."""
+        prop_cols = [c for c in gdf.columns if c != "geometry"]
+        # numpy 타입 → Python 기본 타입 일괄 변환
+        rec = gdf[prop_cols].copy()
+        for c in prop_cols:
+            if rec[c].dtype.kind in ("b",):          rec[c] = rec[c].astype(bool)
+            elif rec[c].dtype.kind in ("i", "u"):    rec[c] = rec[c].astype(int)
+            elif rec[c].dtype.kind in ("f",):        rec[c] = rec[c].astype(float)
+        records = rec.where(rec.notna(), other=None).to_dict(orient="records")
+        geoms   = gdf.geometry.values
+        feats   = [
+            {"type": "Feature", "geometry": g.__geo_interface__, "properties": p}
+            for g, p in zip(geoms, records)
+            if g is not None and not g.is_empty
+        ]
+        return {"type": "FeatureCollection", "features": feats}
 
-    # 역/노선/시설 GeoJSON (WGS84) 미리 직렬화
-    station_w = station.to_crs(WEB_CRS)
-    _write_json_safe(CACHE_STATION_JSON, _gdf_to_geojson_dict(station_w[["geometry"]]))
-
-    subway_w = subway.to_crs(WEB_CRS)
-    _write_json_safe(CACHE_SUBWAY_JSON, _gdf_to_geojson_dict(subway_w[["geometry"]]))
-
+    _write_json_safe(CACHE_STATION_JSON, _gdf_to_geojson_dict(station.to_crs(WEB_CRS)[["geometry"]]))
+    _write_json_safe(CACHE_SUBWAY_JSON,  _gdf_to_geojson_dict(subway.to_crs(WEB_CRS)[["geometry"]]))
     fac_w = fac.to_crs(WEB_CRS)
     for ftype in FACILITY_ORDER:
         sub = fac_w[fac_w["fac_type_norm"] == ftype]
         if not sub.empty:
-            path = Path(CACHE_FAC_JSON_TPL.format(ftype=ftype))
-            _write_json_safe(path, _gdf_to_geojson_dict(sub[["geometry", "fac_type_norm"]]))
+            _write_json_safe(Path(CACHE_FAC_JSON_TPL.format(ftype=ftype)),
+                             _gdf_to_geojson_dict(sub[["geometry", "fac_type_norm"]]))
 
-    # ── 시군구별 그리드 GeoJSON (색상 포함) 캐시 ──────────
+    # ── 시군구별 그리드 GeoJSON ──────────────────────────
     metric_cols = [
-        "sgg_fs_ratio", "sgg_fd_ratio", "sgg_tc_ratio", "sgg_tf_ratio",
-        "nat_fs_ratio", "nat_fd_ratio", "nat_tc_ratio", "nat_tf_ratio",
-        "sgg_pop_map", "nat_pop_map", "local_pop_map",
+        "sgg_fs_ratio","sgg_fd_ratio","sgg_tc_ratio","sgg_tf_ratio",
+        "nat_fs_ratio","nat_fd_ratio","nat_tc_ratio","nat_tf_ratio",
+        "sgg_pop_map","nat_pop_map","local_pop_map",
+        "avg_coverage","avg_mai",
+        "nat_has_fs","nat_has_fd","nat_has_tc","nat_has_tf",
+        "sgg_has_fs","sgg_has_fd","sgg_has_tc","sgg_has_tf",
         GRID_JOIN_COL, SGG_NAME_COL, SGG_CODE_COL,
     ]
     metric_cols = [c for c in metric_cols if c in gdf_safe.columns]
-
     gdf_web = gdf_simple.to_crs(WEB_CRS).copy()
     gdf_web[SGG_CODE_COL] = gdf_web[SGG_CODE_COL].apply(normalize_sgg_code)
     sgg_groups = list(gdf_web.groupby(SGG_CODE_COL))
     n_tiles = len(sgg_groups)
     for i, (sgg_code, grp) in enumerate(sgg_groups):
-        key = normalize_sgg_code(sgg_code)
+        key  = normalize_sgg_code(sgg_code)
         keep = [c for c in metric_cols if c in grp.columns] + ["geometry"]
-        sub = grp[keep].copy()
-        _write_json_safe(CACHE_GEOJSON_DIR / f"grid_{key}.json", _gdf_to_geojson_dict(sub))
+        _write_json_safe(CACHE_GEOJSON_DIR / f"grid_{key}.json", _gdf_to_geojson_dict(grp[keep].copy()))
         if progress_cb:
-            progress_cb(i + 1, n_tiles, f"GeoJSON 타일: {key} ({i+1}/{n_tiles})")
+            progress_cb(i + 1, n_tiles, f"GeoJSON tile: {key} ({i+1}/{n_tiles})")
 
-    # ── 셀 클릭 상세 데이터 캐시 ──────────────────────────
+    # ── 셀 상세 데이터 캐시 (sgg_avg 포함) ─────────────
     if INTRACITY_PATH.exists():
         try:
             ic = pd.read_parquet(INTRACITY_PATH)
@@ -763,7 +707,12 @@ def build_dashboard_cache(progress_cb=None) -> Dict[str, str]:
             keep_c = [GRID_JOIN_COL, "pop", "car_coverage", "car_mai",
                       "avg_coverage", "avg_mai", "cv_coverage", "cv_mai",
                       *COV_COLS, *MAI_COLS]
-            ic[[c for c in keep_c if c in ic.columns]].to_parquet(CACHE_CELL_DATA, index=False)
+            ic_save = ic[[c for c in keep_c if c in ic.columns]].copy()
+            # sgg_avg_coverage / sgg_avg_mai 를 metrics에서 merge
+            sgg_ref = metrics[[GRID_JOIN_COL, "sgg_avg_coverage", "sgg_avg_mai"]].copy() if "sgg_avg_coverage" in metrics.columns else None
+            if sgg_ref is not None:
+                ic_save = ic_save.merge(sgg_ref, on=GRID_JOIN_COL, how="left")
+            ic_save.to_parquet(CACHE_CELL_DATA, index=False)
         except Exception:
             pass
 
@@ -772,258 +721,348 @@ def build_dashboard_cache(progress_cb=None) -> Dict[str, str]:
 
 @st.cache_data(show_spinner=False)
 def load_cached_data():
-    grid = gpd.read_parquet(CACHE_GRID)
+    grid        = gpd.read_parquet(CACHE_GRID)
     grid_simple = gpd.read_parquet(CACHE_GRID_SIMPLE)
-    sgg = gpd.read_parquet(CACHE_SGG)
-    station = gpd.read_parquet(CACHE_STATION)
-    subway = gpd.read_parquet(CACHE_SUBWAY)
-    fac = gpd.read_parquet(CACHE_FAC)
-    ts = pd.read_parquet(CACHE_TS)
-    idx = pd.read_parquet(CACHE_IDX)
+    sgg         = gpd.read_parquet(CACHE_SGG)
+    station     = gpd.read_parquet(CACHE_STATION)
+    subway      = gpd.read_parquet(CACHE_SUBWAY)
+    fac         = gpd.read_parquet(CACHE_FAC)
+    ts          = pd.read_parquet(CACHE_TS)
+    idx         = pd.read_parquet(CACHE_IDX)
     return grid, grid_simple, sgg, station, subway, fac, ts, idx
-
 
 @st.cache_data(show_spinner=False)
 def load_cell_detail_data() -> pd.DataFrame:
-    """셀 클릭 패널용 상세 데이터. CACHE_CELL_DATA 우선, 없으면 CACHE_IDX fallback."""
     src = CACHE_CELL_DATA if CACHE_CELL_DATA.exists() else (CACHE_IDX if CACHE_IDX.exists() else None)
-    if src is None:
-        return pd.DataFrame()
+    if src is None: return pd.DataFrame()
     df = pd.read_parquet(src)
+    df[GRID_JOIN_COL] = df[GRID_JOIN_COL].astype(str).str.strip()
+    return df
+
+@st.cache_data(show_spinner=False)
+def load_facility_access_data() -> pd.DataFrame:
+    if not CACHE_FACILITY_ACCESS.exists(): return pd.DataFrame()
+    df = pd.read_parquet(CACHE_FACILITY_ACCESS)
     df[GRID_JOIN_COL] = df[GRID_JOIN_COL].astype(str).str.strip()
     return df
 
 
 # =========================================================
-# 지도 레이어
+# 지도 HTML 빌드
 # =========================================================
-
-
 def _read_json_safe(path) -> str:
     p = Path(path)
-    if not p.exists():
-        return "null"
-    with open(p, "r", encoding="utf-8") as fh:
-        return fh.read()
+    if not p.exists(): return "null"
+    with open(p, "r", encoding="utf-8") as fh: return fh.read()
 
 
-@st.cache_data(show_spinner=False, max_entries=128)
+
+def _hex_colors_for(base_feats, vcol, norm_obj, cmap_obj):
+    raw = np.array(
+        [(float(f["properties"][vcol]) if f["properties"].get(vcol) is not None else 0.0)
+         for f in base_feats], dtype=np.float32)
+    pos = raw > 0
+    out = [None] * len(base_feats)
+    if pos.any():
+        rgba = cmap_obj(norm_obj(raw[pos]))
+        for j, hi in enumerate(np.where(pos)[0]):
+            out[hi] = mcolors.to_hex(rgba[j])
+    return out
+
+
+def _make_colorbar_html(cmap_name, vmin, vmax):
+    ticks  = make_pretty_ticks(vmin, vmax, n=5)
+    dec    = choose_tick_decimals(vmin, vmax)
+    grad   = gradient_css_from_cmap(cmap_name)
+    labels = "".join(
+        f"<div style='text-align:center;font-size:10px;color:#666;'>{t:.{dec}f}%</div>"
+        for t in ticks)
+    return (
+        f"<div style='padding:4px 8px 6px;background:#fff;border-top:1px solid #eee;'>"
+        f"<div style='height:7px;border-radius:2px;margin-bottom:2px;"
+        f"background:linear-gradient(to right,{grad});'></div>"
+        f"<div style='display:grid;grid-template-columns:repeat(5,1fr);'>{labels}</div>"
+        f"</div>")
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
 def build_multi_map_html(
     sgg_code: str,
-    metrics_json: str,
+    metric_keys_str: str,   # "|".join(selected_metrics)
     center_lat: float,
     center_lng: float,
     zoom: int,
     height_px: int,
-    fac_visible_json: str = "[]",
+    deficit_colors_json: str = "{}",
+    # basis / fac_visible 은 캐시 키 제외:
+    #   basis → JS 가 localStorage('deficitBasis') 읽어 동적 recolor
+    #   fac   → JS 가 localStorage('facVisible')  읽어 초기화/저장
 ) -> str:
-    """모든 지표 지도를 단일 HTML에 배치 — 같은 window에서 직접 Leaflet sync."""
-    import copy as _copy
-    sgg_key = normalize_sgg_code(sgg_code)
-    metrics = json.loads(metrics_json)
-    n = len(metrics)
+    """Iframe HTML. sgg_code+metric_keys 기준으로만 캐시. sgg/nat 색상 양쪽 embed."""
+    sgg_key     = normalize_sgg_code(sgg_code)
+    metric_keys = [k for k in metric_keys_str.split("|") if k]
+    n           = len(metric_keys)
 
     subway_js  = _read_json_safe(CACHE_SUBWAY_JSON)
     station_js = _read_json_safe(CACHE_STATION_JSON)
 
     fac_parts = []
     for ftype in FACILITY_ORDER:
-        color = FACILITY_COLORS.get(ftype, "#999")
-        label = FACILITY_LABELS_EN.get(ftype, ftype)
         fj = _read_json_safe(Path(CACHE_FAC_JSON_TPL.format(ftype=ftype)))
         if fj != "null":
             fac_parts.append(
-                '{"id":' + json.dumps(ftype) + ',"label":' + json.dumps(label) +
-                ',"c":' + json.dumps(color) + ',"d":' + fj + '}'
-            )
+                '{"id":' + json.dumps(ftype) +
+                ',"label":' + json.dumps(FACILITY_LABELS_EN.get(ftype, ftype)) +
+                ',"c":' + json.dumps(FACILITY_COLORS.get(ftype, "#999")) +
+                ',"d":' + fj + '}')
     fac_js = "[" + ",".join(fac_parts) + "]"
 
-    # 지표별 그리드 (색상 사전계산)
     grid_path = CACHE_GEOJSON_DIR / f"grid_{sgg_key}.json"
+    base_gj   = None
     if grid_path.exists():
         with open(grid_path, "r", encoding="utf-8") as fh:
             base_gj = json.load(fh)
-    else:
-        base_gj = None
+    base_feats = base_gj.get("features", []) if base_gj else []
 
-    grid_js_list = []
-    for m in metrics:
-        if base_gj is None:
-            grid_js_list.append("null")
-            continue
-        gj = _copy.deepcopy(base_gj)
-        norm_obj = PowerNormSafe(gamma=m["gamma"], vmin=m["vmin"], vmax=m["vmax"])
-        cmap_obj = matplotlib.colormaps[m["cmap"]]
-        for feat in gj.get("features", []):
-            val = feat["properties"].get(m["value_col"])
-            try:
-                fval = float(val) if val is not None else 0.0
-            except Exception:
-                fval = 0.0
-            if fval > 0:
-                try:
-                    rgba = cmap_obj(norm_obj(fval))
-                    feat["properties"]["_f"] = mcolors.to_hex(rgba, keep_alpha=False)
-                    feat["properties"]["_o"] = 0.88
-                except Exception:
-                    feat["properties"]["_f"] = None
-                    feat["properties"]["_o"] = 0.0
+    # ── 모든 metric × sgg/nat 색상+colorbar 미리 계산 ────────────────────────
+    colors_by_mk = {}
+    cbars_by_mk  = {}
+
+    for mk in metric_keys:
+        cmap_name = CMAPS.get(mk, "Blues")
+        cmap_obj  = matplotlib.colormaps[cmap_name]
+        colors_by_mk[mk] = {}
+        cbars_by_mk[mk]  = {}
+        for basis in ("sgg", "nat"):
+            vcol = get_value_col(mk, basis)
+            if mk in ("coverage", "mai"):
+                vals_s = pd.Series(
+                    [float(f["properties"].get(vcol) or 0) for f in base_feats],
+                    dtype=np.float32)
+                _, vmax, norm_obj = compute_continuous_norm(vals_s, gamma=0.6)
+                vmin = 0.0
+            elif mk == "pop":
+                vals_s = pd.Series(
+                    [float(f["properties"].get(vcol) or 0) for f in base_feats],
+                    dtype=np.float32)
+                vmin, vmax, norm_obj = compute_group_pop_norm(vals_s, share_mode=True)
             else:
-                feat["properties"]["_f"] = None
-                feat["properties"]["_o"] = 0.0
-        grid_js_list.append(json.dumps(gj))
+                all_vals = []
+                for k2 in ["fs","fd","tc","tf"]:
+                    vc2 = f"{basis}_{k2}_ratio"
+                    all_vals.extend(
+                        [float(f["properties"].get(vc2) or 0) for f in base_feats])
+                vmin, vmax, norm_obj = compute_group_norm_from_series(
+                    pd.Series(all_vals, dtype=np.float32), gamma=0.55, force_zero_min=True)
+            colors_by_mk[mk][basis] = _hex_colors_for(base_feats, vcol, norm_obj, cmap_obj)
+            cbars_by_mk[mk][basis]  = _make_colorbar_html(cmap_name, vmin, vmax)
+
+    # ── GeoJSON: _fs(sgg색)/_fn(nat색) 양쪽 embed ────────────────────────────
+    grid_js_list = []
+    if not base_feats:
+        grid_js_list = ["null"] * n
+    else:
+        for mk in metric_keys:
+            sc_ = colors_by_mk[mk]["sgg"]
+            nc_ = colors_by_mk[mk]["nat"]
+            new_feats = []
+            for fi, feat in enumerate(base_feats):
+                p = dict(feat["properties"])
+                p["_fs"] = sc_[fi]
+                p["_fn"] = nc_[fi]
+                p["_o"]  = 0.80
+                new_feats.append({"type":"Feature",
+                                  "geometry":feat["geometry"],
+                                  "properties":p})
+            grid_js_list.append(
+                json.dumps({"type":"FeatureCollection","features":new_feats}))
+
+    cbars_js_arr = '[' + ','.join(
+        json.dumps({"sgg": cbars_by_mk[mk]["sgg"], "nat": cbars_by_mk[mk]["nat"]})
+        for mk in metric_keys) + ']'
 
     sgg_col = SGG_NAME_COL
     gj_col  = GRID_JOIN_COL
-    grid_css = "display:block;" if n == 1 else "display:grid;grid-template-columns:1fr 1fr;gap:4px;"
 
-    map_divs_parts = []
-    for i, m in enumerate(metrics):
-        map_divs_parts.append(
-            '<div class="map-wrap">'
-            '<div class="map-title">' + m["title"] + '</div>'
-            '<div id="map' + str(i) + '" class="map-box"></div>'
-            '</div>'
-        )
-    map_divs = "\n".join(map_divs_parts)
+    cols_css = "display:block;" if n == 1 else "display:grid;grid-template-columns:1fr 1fr;gap:4px;"
+    map_divs = ""
+    for i, mk in enumerate(metric_keys):
+        map_divs += (
+            f'<div class="map-wrap">'
+            f'<div class="map-title">{BASE_MAP_LABELS.get(mk, LAYER_KEY_TO_LABEL.get(mk, mk))}</div>'
+            f'<div id="map{i}" class="map-box"></div>'
+            f'<div id="cb{i}" class="colorbar-wrap">{cbars_by_mk[mk]["sgg"]}</div>'
+            f'</div>')
 
-    maps_init_parts = []
-    for i, m in enumerate(metrics):
-        vcol  = json.dumps(m["value_col"])
-        sc    = json.dumps(sgg_col)
-        jc    = json.dumps(gj_col)
-        mi    = str(i)
-        maps_init_parts.append(
-            "var map" + mi + "=L.map('map" + mi + "',{"
-            "center:[" + str(center_lat) + "," + str(center_lng) + "],zoom:" + str(zoom) + ","
-            "zoomControl:true,preferCanvas:true,renderer:L.canvas({tolerance:3})});\n"
-            "L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',"
-            "{attribution:'&copy; OpenStreetMap &copy; CARTO',subdomains:'abcd',maxZoom:19}).addTo(map" + mi + ");\n"
-            # grid  ── Canvas 렌더러는 onEachFeature click 불가 → 지도 click으로 대체
-            "(function(map,gd,vc,sc,jc){"
-            "if(!gd)return;"
-            # GeoJSON 레이어 (Canvas, 성능용)
-            "L.geoJSON(gd,{style:function(f){var p=f.properties;"
-            "if(!p._f)return{fillOpacity:0,weight:.3,color:'#aaa',opacity:.2};"
-            "return{fillColor:p._f,fillOpacity:p._o||.88,weight:.5,color:'#555',opacity:.5};},"
-            "onEachFeature:function(f,layer){var p=f.properties,t='';"
-            "if(p[sc])t+='<b>'+p[sc]+'</b><br/>';"
-            "var v=p[vc];if(v!=null)t+='Value: '+(+v).toFixed(3);"
-            "if(t)layer.bindTooltip(t,{sticky:true,opacity:.95});},"
-            "renderer:L.canvas({tolerance:2})}).addTo(map);"
-            # 지도 click → features 배열에서 point-in-bbox 후 from_id 추출
-            "var feats=gd.features||[];"
-            "map.on('click',function(e){"
-            "var lat=e.latlng.lat,lng=e.latlng.lng;"
-            "var found=null;"
-            "for(var i=0;i<feats.length;i++){"
-            "var f=feats[i];"
-            "if(!f.geometry)continue;"
-            "var bb=getBBox(f.geometry);"  # bbox 먼저 체크 (빠름)
-            "if(lat<bb[1]||lat>bb[3]||lng<bb[0]||lng>bb[2])continue;"
-            "if(pointInPolygon(lat,lng,f.geometry)){found=f;break;}"
-            "}"
-            "if(!found)return;"
-            "var fid=found.properties[jc];if(!fid)return;"
-            "if(window._hlLayer){try{window._hlLayer.setStyle({weight:.5,color:'#555',opacity:.5});}catch(ex){}}"
-            # Canvas에선 setStyle 불가 → 하이라이트 레이어를 별도 SVG GeoJSON으로
-            "if(window._hlGeoJSON){map.removeLayer(window._hlGeoJSON);}"
-            "window._hlGeoJSON=L.geoJSON(found,{style:function(){"
-            "return{fill:false,weight:3,color:'#2458FF',opacity:1};"
-            "}}).addTo(map);"
-            "showCellPanel(String(fid));"
-            "});"
-            "})(map" + mi + ",gridData[" + mi + "]," + vcol + "," + sc + "," + jc + ");\n"
-            # subway (그리드 위)
-            "if(subwayData)L.geoJSON(subwayData,{style:function(){return{color:'#333',weight:2.2,opacity:.75,fill:false}},renderer:L.canvas()}).addTo(map" + mi + ");\n"
-            # station (노선 위)
-            "if(stationData)L.geoJSON(stationData,{pointToLayer:function(f,ll){"
-            "return L.circleMarker(ll,{radius:5,color:'#222',weight:1.8,fillColor:'#fff',fillOpacity:1,opacity:1});},"
-            "renderer:L.canvas()}).addTo(map" + mi + ");\n"
-            # facilities (최상위)
-            "facData.forEach(function(x){if(!x.d)return;"
-            "if(!facLayers[x.id])facLayers[x.id]={maps:[],color:x.c,label:x.label};"
-            "var lyr=L.geoJSON(x.d,{pointToLayer:function(f,ll){"
-            "return L.circleMarker(ll,{radius:4.5,color:'#fff',weight:1.2,fillColor:x.c,fillOpacity:.9,opacity:.9});},"
-            "renderer:L.canvas()});"
-            "facLayers[x.id].maps.push({map:map" + mi + ",layer:lyr});"
-            "if(facVisible.indexOf(x.id)>=0)lyr.addTo(map" + mi + ");});\n"
-            "allMaps.push(map" + mi + ");"
+    deficit_colors = json.loads(deficit_colors_json)
+
+    # ── JS: 지도 초기화 ──────────────────────────────────────────────────────
+    maps_init = ""
+    for mi, mk in enumerate(metric_keys):
+        sc_js  = json.dumps(sgg_col)
+        jc_js  = json.dumps(gj_col)
+        maps_init += (
+            f"var map{mi}=L.map('map{mi}',{{"
+            f"center:[{center_lat},{center_lng}],zoom:{zoom},"
+            f"zoomControl:true,preferCanvas:true,renderer:L.canvas({{tolerance:3}})}});\n"
+            f"L.tileLayer('https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png',"
+            f"{{attribution:'&copy; OpenStreetMap &copy; CARTO',subdomains:'abcd',maxZoom:19}}).addTo(map{mi});\n"
+            f"(function(map,gd,sc,jc){{"
+            f"if(!gd)return;"
+            f"var glyr=L.geoJSON(gd,{{style:function(f){{"
+            f"  var p=f.properties;"
+            f"  var fc=(window.deficitBasis||'sgg')==='nat'?p._fn:p._fs;"
+            f"  if(!fc)return{{fillOpacity:0,weight:0.8,color:'#999',opacity:0.45}};"
+            f"  return{{fillColor:fc,fillOpacity:p._o||0,weight:0.8,color:'#888',opacity:0.5}};}},\n"
+            f"onEachFeature:function(f,layer){{var p=f.properties,t='';"
+            f"if(p[sc])t+='<b>'+p[sc]+'</b><br/>';"
+            f"if(t)layer.bindTooltip(t,{{sticky:true,opacity:.95}});}},\n"
+            f"renderer:L.canvas({{tolerance:2}})}}).addTo(map);\n"
+            f"gridLayers.push(glyr);\n"
+            f"var feats=gd.features||[];"
+            f"map.on('click',function(e){{"
+            f"var lat=e.latlng.lat,lng=e.latlng.lng,found=null;"
+            f"for(var i=0;i<feats.length;i++){{"
+            f"var f=feats[i];if(!f.geometry)continue;"
+            f"var bb=getBBox(f.geometry);"
+            f"if(lat<bb[1]||lat>bb[3]||lng<bb[0]||lng>bb[2])continue;"
+            f"if(pointInPolygon(lat,lng,f.geometry)){{found=f;break;}}"
+            f"}}"
+            f"if(!found)return;"
+            f"var fid=found.properties[jc];if(!fid)return;"
+            f"if(window._hlGeoJSON){{map.removeLayer(window._hlGeoJSON);window._hlGeoJSON=null;}}"
+            f"window._hlGeoJSON=L.geoJSON(found,{{style:function(){{"
+            f"return{{fill:false,weight:3,color:'#1A73E8',opacity:1}};}}}}).addTo(map);"
+            f"showCellPanel(String(fid));"
+            f"}});"
+            f"}})(map{mi},gridData[{mi}],{sc_js},{jc_js});\n"
+            f"if(subwayData)L.geoJSON(subwayData,{{style:function(){{return{{color:'#424242',weight:2,opacity:0.6,fill:false}}}},renderer:L.canvas()}}).addTo(map{mi});\n"
+            f"if(stationData)L.geoJSON(stationData,{{pointToLayer:function(f,ll){{"
+            f"return L.circleMarker(ll,{{radius:4.5,color:'#333',weight:1.5,fillColor:'#fff',fillOpacity:1,opacity:1}});}},renderer:L.canvas()}}).addTo(map{mi});\n"
+            f"facData.forEach(function(x){{if(!x.d)return;"
+            f"if(!facLayers[x.id])facLayers[x.id]={{maps:[],color:x.c,label:x.label}};"
+            f"var lyr=L.geoJSON(x.d,{{pointToLayer:function(f,ll){{"
+            f"return L.circleMarker(ll,{{radius:4,color:'#fff',weight:1,fillColor:x.c,fillOpacity:.88,opacity:.88}});}},renderer:L.canvas()}});"
+            f"facLayers[x.id].maps.push({{map:map{mi},layer:lyr}});"
+            f"if(facVisible.indexOf(x.id)>=0)lyr.addTo(map{mi});}});\n"
+            f"Object.keys(deficitInfo).forEach(function(dk){{"
+            f"  if(!deficitLayers[dk])deficitLayers[dk]={{maps:[],color:deficitInfo[dk].c,label:deficitInfo[dk].label}};"
+            f"  (function(dkLocal,dcolLocal){{"
+            f"    function makeStyleFns(basis){{"
+            f"      var col=basis+'_has_'+dkLocal;"
+            f"      var wFn=function(f){{var p=f.properties;"
+            f"        var isD=p[col]===true||p[col]==='true'||p[col]===1;"
+            f"        if(!isD)return{{fill:false,weight:0,opacity:0}};"
+            f"        return{{fill:false,weight:5,color:'#ffffff',opacity:1}};}};"
+            f"      var cFn=function(f){{var p=f.properties;"
+            f"        var isD=p[col]===true||p[col]==='true'||p[col]===1;"
+            f"        if(!isD)return{{fill:false,weight:0,opacity:0}};"
+            f"        return{{fill:false,weight:2.5,color:dcolLocal,opacity:1}};}};"
+            f"      return{{white:wFn,color:cFn}};"
+            f"    }}"
+            f"    var fns=makeStyleFns(window.deficitBasis||'sgg');"
+            f"    var dlyrW=L.geoJSON(gridData[{mi}],{{style:fns.white,renderer:L.canvas({{tolerance:0}})}});"
+            f"    var dlyr=L.geoJSON(gridData[{mi}],{{style:fns.color,renderer:L.canvas({{tolerance:0}})}});"
+            f"    deficitLayers[dkLocal].maps.push({{map:map{mi},layer:dlyr,whiteLayer:dlyrW,makeStyleFns:makeStyleFns}});"
+            f"    if(deficitVisible.indexOf(dkLocal)>=0){{dlyrW.addTo(map{mi});dlyr.addTo(map{mi});}}"
+            f"  }})(dk,deficitInfo[dk].c);"
+            f"}});\n"
+            f"allMaps.push(map{mi});\n"
         )
-    maps_init_js = "\n".join(maps_init_parts)
 
     sync_js = (
-        "allMaps.forEach(function(src){\n"
-        "  src.on('moveend zoomend',function(){\n"
-        "    if(src._syncBusy)return;\n"
-        "    var c=src.getCenter(),z=src.getZoom();\n"
-        "    allMaps.forEach(function(dst){\n"
-        "      if(dst===src)return;\n"
-        "      dst._syncBusy=true;\n"
-        "      dst.setView(c,z,{animate:false,noMoveStart:true});\n"
-        "      dst._syncBusy=false;\n"
-        "    });\n"
-        "  });\n"
-        "});"
+        "allMaps.forEach(function(src){"
+        "allMaps.forEach(function(dst){"
+        "if(src===dst)return;"
+        "src.on('move',function(){dst.setView(src.getCenter(),src.getZoom(),{animate:false});});"
+        "});});"
     )
 
     fac_toggle_js = (
         "var ctrl=document.getElementById('fc');\n"
-        "Object.keys(facLayers).forEach(function(id){\n"
-        "  var info=facLayers[id];\n"
-        "  var lbl=document.createElement('label');\n"
-        "  var cb=document.createElement('input'); cb.type='checkbox';\n"
-        "  cb.checked=(facVisible.indexOf(id)>=0);\n"
-        "  cb.addEventListener('change',function(){\n"
-        "    var on=this.checked;\n"
-        "    info.maps.forEach(function(x){\n"
-        "      if(on)x.layer.addTo(x.map); else x.map.removeLayer(x.layer);\n"
-        "    });\n"
-        "  });\n"
-        "  var dot=document.createElement('span'); dot.className='dot'; dot.style.background=info.color;\n"
-        "  lbl.appendChild(cb); lbl.appendChild(dot);\n"
-        "  lbl.appendChild(document.createTextNode(info.label));\n"
-        "  ctrl.appendChild(lbl);\n"
+        "(function(){"
+        "  var btn=document.createElement('button');"
+        "  btn.textContent='All Off';"
+        "  btn.style.cssText='font-size:9px;padding:1px 7px;margin-bottom:4px;cursor:pointer;"
+        "border:1px solid #ccc;border-radius:3px;background:#f5f5f5;color:#555;display:block;width:100%;';"
+        "  btn.addEventListener('click',function(){"
+        "    var cbs=ctrl.querySelectorAll('input[type=checkbox]');"
+        "    cbs.forEach(function(cb){if(cb.checked){cb.checked=false;cb.dispatchEvent(new Event('change'));}});"
+        "    try{localStorage.setItem('facVisible',JSON.stringify([]));}catch(e){}"
+        "  });"
+        "  ctrl.appendChild(btn);"
+        "})();\n"
+        "Object.keys(facLayers).forEach(function(id){"
+        "  var info=facLayers[id];"
+        "  var lbl=document.createElement('label');"
+        "  var cb=document.createElement('input');cb.type='checkbox';cb.setAttribute('data-fid',id);"
+        "  cb.checked=(facVisible.indexOf(id)>=0);"
+        "  cb.addEventListener('change',function(){"
+        "    var on=this.checked;"
+        "    info.maps.forEach(function(x){if(on)x.layer.addTo(x.map);else x.map.removeLayer(x.layer);});"
+        "    var vis=Object.keys(facLayers).filter(function(k){"
+        "      var c=ctrl.querySelector('input[data-fid=\"'+k+'\"]');return c&&c.checked;});"
+        "    try{localStorage.setItem('facVisible',JSON.stringify(vis));}catch(e){}"
+        "  });"
+        "  var dot=document.createElement('span');dot.className='dot';dot.style.background=info.color;"
+        "  lbl.appendChild(cb);lbl.appendChild(dot);"
+        "  lbl.appendChild(document.createTextNode(info.label));"
+        "  ctrl.appendChild(lbl);"
         "});"
     )
 
-    rows = 1 if n <= 2 else 2
-    total_h = (height_px + 26) * rows + 16
+    rows    = 1 if n <= 2 else 2
+    panel_h = (height_px + 26 + 42) * rows
 
     panel_css = (
-        # 전체 레이아웃: 지도 + 패널을 가로로 배치
-        '.outer-wrap{display:flex;flex-direction:row;gap:0;width:100%;}'
-        '.maps-section{flex:1 1 0;min-width:0;}'
-        # 클릭 패널
-        '.cell-panel{'
-        'flex:0 0 260px;width:260px;min-width:260px;'
-        'background:#fafafa;border-left:1px solid #e0e0e0;'
-        'padding:12px 14px 10px 14px;font-family:sans-serif;'
-        'display:none;overflow-y:auto;'
-        'max-height:' + str(height_px) + 'px;'
-        '}'
-        '.cell-panel.visible{display:block;}'
-        '.cp-section-lbl{'
-        'font-size:8.5px;font-weight:700;letter-spacing:.8px;'
-        'text-transform:uppercase;margin-top:10px;margin-bottom:3px;}'
-        '.cp-metrics{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;margin-bottom:2px;}'
-        '.cp-m{background:#fff;border:1px solid #eee;border-radius:4px;'
-        'padding:5px 7px;}'
-        '.cp-m-label{font-size:8px;color:#999;margin-bottom:1px;}'
-        '.cp-m-val{font-size:14px;font-weight:700;color:#222;line-height:1.2;}'
-        '.cp-ref{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 6px;}'
-        '.cp-r{}'
-        '.cp-r-label{font-size:8px;color:#bbb;}'
-        '.cp-r-val{font-size:11px;font-weight:600;color:#555;}'
-        '.cp-close{float:right;cursor:pointer;font-size:16px;color:#bbb;'
-        'line-height:1;margin-left:6px;}'
-        '.cp-close:hover{color:#555;}'
-        '.cp-id{font-size:12px;font-weight:700;color:#1a1a1a;'
-        'border-bottom:2px solid #7B2CBF;padding-bottom:4px;margin-bottom:0;}'
-        '.cp-id-sub{font-size:9px;color:#999;letter-spacing:.4px;margin-bottom:6px;}'
-        # Chart.js canvas
-        '#cp-chart-wrap{margin-top:4px;}'
-        '#cp-chart{display:block;width:100%!important;height:150px!important;}'
+        ".outer-wrap{display:flex;flex-direction:row;gap:0;width:100%;}"
+        ".maps-section{flex:1 1 0;min-width:0;}"
+        ".cell-panel{"
+        "flex:0 0 268px;width:268px;min-width:268px;"
+        "background:#fefefe;border-left:1px solid #e8e8e8;"
+        "padding:12px 14px 10px 14px;font-family:'Inter',system-ui,sans-serif;"
+        "display:none;overflow-y:auto;max-height:" + str(panel_h) + "px;"
+        "}"
+        ".cell-panel.visible{display:block;}"
+        ".cp-sec{font-size:7.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;"
+        "margin-top:10px;margin-bottom:3px;}"
+        ".cp-metrics{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;margin-bottom:2px;}"
+        ".cp-m{background:#f9f9f9;border:1px solid #eee;border-radius:4px;padding:5px 7px;}"
+        ".cp-m-label{font-size:7.5px;color:#aaa;margin-bottom:1px;font-weight:500;}"
+        ".cp-m-val{font-size:14px;font-weight:700;color:#1a1a1a;line-height:1.2;}"
+        ".cp-ref{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 6px;}"
+        ".cp-r-label{font-size:7.5px;color:#bbb;font-weight:500;}"
+        ".cp-r-val{font-size:11px;font-weight:600;color:#555;}"
+        ".cp-close{float:right;cursor:pointer;font-size:14px;color:#ccc;margin-left:5px;padding:2px;}"
+        ".cp-close:hover{color:#555;}"
+        ".cp-id{font-size:11px;font-weight:700;color:#1a1a1a;border-bottom:2px solid #3F51B5;padding-bottom:3px;}"
+        ".cp-id-sub{font-size:7px;color:#bbb;letter-spacing:.6px;margin-bottom:4px;text-transform:uppercase;}"
+        ".cp-sgg-ref{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;}"
+        ".cp-sgg-m{background:#f0f4ff;border:1px solid #dde5f5;border-radius:4px;padding:4px 7px;}"
+        ".cp-sgg-label{font-size:7.5px;color:#8a9ac0;margin-bottom:1px;font-weight:500;}"
+        ".cp-sgg-val{font-size:12px;font-weight:700;color:#3F51B5;}"
+        ".cp-inacc-tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:2px;}"
+        ".cp-deficit-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;}"
+        ".cp-inacc-tag{font-size:8.5px;padding:2px 5px;border-radius:10px;"
+        "background:#FFF3E0;color:#E65100;border:1px solid #FFB74D;font-weight:600;}"
+        ".cp-inacc-ok{font-size:8.5px;color:#43A047;font-weight:600;}"
+        "#cp-chart{display:block;width:100%!important;height:145px!important;}"
+        ".fac-ctrl{position:absolute;bottom:48px;right:8px;z-index:1000;"
+        "background:rgba(255,255,255,.97);border:1px solid #ddd;border-radius:6px;"
+        "padding:6px 10px;font-size:11px;line-height:1.9;"
+        "box-shadow:0 2px 8px rgba(0,0,0,.10);min-width:145px;}"
+        ".fac-hdr{font-weight:700;font-size:9.5px;color:#666;margin-bottom:2px;letter-spacing:.5px;text-transform:uppercase;}"
+        ".fac-ctrl label{display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;color:#444;}"
+        ".fac-ctrl input{cursor:pointer;margin:0;width:12px;height:12px;}"
+        ".dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,.12);}"
+        ".map-wrap{position:relative;}"
+        ".map-title{font-size:11px;font-weight:600;color:#555;padding:3px 8px;background:#fafafa;"
+        "letter-spacing:.3px;border-bottom:1px solid #eee;}"
+        ".colorbar-wrap{background:#fff;border-top:none;}"
+        ".map-box{width:100%;height:" + str(height_px) + "px;}"
+        ".maps-grid{" + cols_css + "width:100%;}"
+        ".leaflet-tooltip{font-size:11px;background:rgba(255,255,255,.97);"
+        "border:1px solid #ddd;padding:4px 8px;box-shadow:0 2px 6px rgba(0,0,0,.10);color:#333;}"
     )
 
     chart_cdn = '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
@@ -1031,14 +1070,27 @@ def build_multi_map_html(
     panel_js = (
         "var _cpChart=null;\n"
         "var TIME_SLOTS=['08:00','10:00','12:00','14:00','16:00','18:00','20:00','22:00'];\n"
+        "var SLOT_KEYS=['08','10','12','14','16','18','20','22'];\n"
         "var COV_COLS=['08_coverage','10_coverage','12_coverage','14_coverage','16_coverage','18_coverage','20_coverage','22_coverage'];\n"
         "var MAI_COLS=['08_mai','10_mai','12_mai','14_mai','16_mai','18_mai','20_mai','22_mai'];\n"
-        "function fv(v,suf,dec){\n"
-        "  if(v===null||v===undefined)return 'N/A';\n"
-        "  var f=parseFloat(v);\n"
-        "  if(isNaN(f))return 'N/A';\n"
-        "  return f.toFixed(dec!==undefined?dec:2)+(suf!==undefined?suf:'%');\n"
-        "}\n"
+        "var FAC_LABEL_MAP=" + json.dumps(OD_FACILITY_LABELS) + ";\n"
+        "var FAC_OD_COLS="   + json.dumps(OD_FACILITY_COLS)   + ";\n"
+        "var FAC_COV_THRESH=" + json.dumps(FAC_COV_THRESH)    + ";\n"
+        "var MAI_THRESH=" + str(MAI_THRESH) + ";\n"
+        # 표시용: m2~m6 → specialist 하나로 묶음
+        "var DISPLAY_FAC_COLS=" + json.dumps(DISPLAY_FAC_COLS) + ";\n"
+        "var DISPLAY_FAC_LABELS=" + json.dumps(DISPLAY_FAC_LABELS) + ";\n"
+        "var SPECIALIST_COLS=" + json.dumps(SPECIALIST_COLS) + ";\n"
+        "var SPECIALIST_DETAIL_LABELS=" + json.dumps(SPECIALIST_DETAIL_LABELS) + ";\n"
+        "var SPECIALIST_LABEL='" + SPECIALIST_LABEL + "';\n"
+        "var DEFICIT_LABEL_MAP={fs:'F(s)',fd:'F(d)',tc:'T(c)',tf:'T(f)'};\n"
+        "var DEFICIT_COLOR_MAP=" + json.dumps(DEFICIT_COLORS) + ";\n"
+        # DEFICIT_BASIS는 localStorage에서 동적으로 읽음 (basis 전환 시 뷰포트 유지)
+        "function getDeficitBasis(){return window.deficitBasis||'sgg';}\n"
+        "function fv(v,suf,dec){"
+        "  if(v===null||v===undefined)return 'N/A';"
+        "  var f=parseFloat(v);if(isNaN(f))return 'N/A';"
+        "  return f.toFixed(dec!==undefined?dec:2)+(suf!==undefined?suf:'%');}\n"
         "function showCellPanel(fid){\n"
         "  var d=(window.cellData||{})[fid];\n"
         "  var panel=document.getElementById('cell-panel');\n"
@@ -1049,34 +1101,279 @@ def build_multi_map_html(
         "  document.getElementById('cp-avg-mai').textContent=fv(d.avg_mai);\n"
         "  document.getElementById('cp-cv-cov').textContent=fv(d.cv_coverage,'');\n"
         "  document.getElementById('cp-cv-mai').textContent=fv(d.cv_mai,'');\n"
+        # SGG avg
+        "  document.getElementById('cp-sgg-cov').textContent=fv(d.sgg_avg_coverage);\n"
+        "  document.getElementById('cp-sgg-mai').textContent=fv(d.sgg_avg_mai);\n"
+        # Deficit types
+        "  var defEl=document.getElementById('cp-deficit-tags');\n"
+        "  var defTypes=[];\n"
+        "  ['fs','fd','tc','tf'].forEach(function(dk){\n"
+        "    var col=getDeficitBasis()+'_has_'+dk;\n"
+        "    if(d[col]===true||d[col]==='true'||d[col]===1)defTypes.push(dk);\n"
+        "  });\n"
+        "  if(defTypes.length>0){\n"
+        "    defEl.innerHTML=defTypes.map(function(dk){\n"
+        "      var c=DEFICIT_COLOR_MAP[dk]||'#999';\n"
+        "      return '<span style=\"display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;border:1.5px solid '+c+';color:'+c+';background:'+c+'18;\">'+DEFICIT_LABEL_MAP[dk]+'</span>';\n"
+        "    }).join('');\n"
+        "  } else {\n"
+        "    defEl.innerHTML='<span style=\"font-size:9px;color:#aaa;\">None</span>';\n"
+        "  }\n"
         # Reference
         "  document.getElementById('cp-pop').textContent=fv(d.pop,'',0);\n"
         "  document.getElementById('cp-car-cov').textContent=fv(d.car_coverage);\n"
         "  document.getElementById('cp-car-mai').textContent=fv(d.car_mai);\n"
+        # Inaccessible facilities (static panel) — m2~m6 → "Specialist care" 묶음 표시
+        "  var acc=(window.facAccessData||{})[fid];\n"
+        "  var tagsEl=document.getElementById('cp-inacc-tags');\n"
+        "  function buildInaccHTML(getAccFn){\n"
+        "    var rawAcc={};\n"
+        "    FAC_OD_COLS.forEach(function(fc){rawAcc[fc]=getAccFn(fc);});\n"
+        "    var specOk=SPECIALIST_COLS.some(function(fc){return rawAcc[fc]===true;});\n"
+        "    var det=SPECIALIST_COLS.filter(function(fc){return !rawAcc[fc];});\n"
+        # non-specialist inaccessible list
+        "    var inaccDcs=DISPLAY_FAC_COLS.filter(function(dc){return dc!=='specialist'&&!rawAcc[dc];});\n"
+        # specialist 완전 accessible (세부 모두 ok)이면 패널 포함 안 함
+        "    var showSpec=!(specOk&&det.length===0);\n"
+        "    var hasAnyInacc=inaccDcs.length>0||(!specOk);\n"
+        "    if(!hasAnyInacc&&!showSpec)return '<span class=\"cp-inacc-ok\">✓ All accessible</span>';\n"
+        "    var html='';\n"
+        # non-specialist inaccessible tags
+        "    html+=inaccDcs.map(function(dc){\n"
+        "      return '<span class=\"cp-inacc-tag\">'+(DISPLAY_FAC_LABELS[dc]||dc)+'</span>';\n"
+        "    }).join('');\n"
+        # specialist tag: accessible→초록, inaccessible→기존 태그색
+        "    if(showSpec){\n"
+        "      var tid='sp-detail-'+Math.random().toString(36).slice(2,7);\n"
+        "      var dh=det.map(function(fc){\n"
+        "        return '<span style=\"font-size:8px;margin-right:3px;\">· '+SPECIALIST_DETAIL_LABELS[fc]+'</span>';\n"
+        "      }).join('');\n"
+        "      if(specOk){\n"
+        # accessible이지만 세부 inaccessible 있음 → 초록 태그 + ℹ
+        "        html+='<span class=\"cp-inacc-tag\" style=\"background:#E8F5E9;color:#2E7D32;border-color:#A5D6A7;cursor:default;\">'\n"
+        "          +'✓ '+SPECIALIST_LABEL\n"
+        "          +' <span onclick=\"(function(){var e=document.getElementById(\\''+tid+'\\');e.style.display=e.style.display===\\'none\\'?\\'block\\':\\'none\\';})()\" '\n"
+        "          +'style=\"cursor:pointer;font-size:8px;color:#2E7D32;border:1px solid #A5D6A7;border-radius:3px;padding:0 3px;margin-left:2px;\" title=\"Show inaccessible sub-types\">ℹ</span>'\n"
+        "          +'</span>'\n"
+        "          +(det.length>0\n"
+        "            ?'<div id=\"'+tid+'\" style=\"display:none;width:100%;margin-top:2px;background:#E8F5E9;border-radius:4px;padding:3px 6px;font-size:8px;color:#2E7D32;\">Inaccessible: '+dh+'</div>'\n"
+        "            :'');\n"
+        "      } else {\n"
+        # inaccessible → 주황 태그 + ℹ
+        "        html+='<span class=\"cp-inacc-tag\" style=\"cursor:default;\">'\n"
+        "          +SPECIALIST_LABEL\n"
+        "          +' <span onclick=\"(function(){var e=document.getElementById(\\''+tid+'\\');e.style.display=e.style.display===\\'none\\'?\\'block\\':\\'none\\';})()\" '\n"
+        "          +'style=\"cursor:pointer;font-size:8px;color:#8E24AA;border:1px solid #CE93D8;border-radius:3px;padding:0 3px;margin-left:2px;\" title=\"Show inaccessible sub-types\">ℹ</span>'\n"
+        "          +'</span>'\n"
+        "          +(det.length>0\n"
+        "            ?'<div id=\"'+tid+'\" style=\"display:none;width:100%;margin-top:2px;background:#F3E5F5;border-radius:4px;padding:3px 6px;font-size:8px;color:#6A1B9A;\">Inaccessible: '+dh+'</div>'\n"
+        "            :'');\n"
+        "      }\n"
+        "    }\n"
+        "    if(!html)return '<span class=\"cp-inacc-ok\">✓ All accessible</span>';\n"
+        "    return html;\n"
+        "  }\n"
+        "  (function(){\n"
+        "    if(!acc){\n"
+        "      tagsEl.innerHTML='<span style=\"font-size:8.5px;color:#bbb;\">OD data not available</span>';\n"
+        "      return;\n"
+        "    }\n"
+        "    var hasCovSlot=FAC_OD_COLS.some(function(fc){return acc['cov_08_'+fc]!==undefined;});\n"
+        "    tagsEl.innerHTML=buildInaccHTML(function(fc){\n"
+        "      if(hasCovSlot){\n"
+        "        return SLOT_KEYS.some(function(s){return acc['cov_'+s+'_'+fc]===1;});\n"
+        "      } else {\n"
+        "        return !(acc['pt_'+fc]===0||acc['pt_'+fc]===false);\n"
+        "      }\n"
+        "    });\n"
+        "  })();\n"
         # Chart
         "  var covVals=COV_COLS.map(function(c){var v=d[c];return(v!=null&&!isNaN(parseFloat(v)))?parseFloat(v):null;});\n"
         "  var maiVals=MAI_COLS.map(function(c){var v=d[c];return(v!=null&&!isNaN(parseFloat(v)))?parseFloat(v):null;});\n"
         "  if(_cpChart){_cpChart.destroy();_cpChart=null;}\n"
         "  var ctx=document.getElementById('cp-chart').getContext('2d');\n"
-        "  _cpChart=new Chart(ctx,{type:'line',\n"
-        "    data:{labels:TIME_SLOTS,datasets:[\n"
-        "      {label:'Coverage (%)',data:covVals,borderColor:'#7B2CBF',backgroundColor:'#7B2CBF18',\n"
-        "       pointBackgroundColor:'#7B2CBF',pointBorderColor:'#fff',pointBorderWidth:1.2,\n"
-        "       pointRadius:3,borderWidth:1.8,tension:0.15,fill:false},\n"
-        "      {label:'MAI (%)',data:maiVals,borderColor:'#9CCC65',backgroundColor:'#9CCC6518',\n"
-        "       pointBackgroundColor:'#9CCC65',pointBorderColor:'#fff',pointBorderWidth:1.2,\n"
-        "       pointRadius:3,borderWidth:1.8,tension:0.15,fill:false}\n"
-        "    ]},\n"
-        "    options:{responsive:true,maintainAspectRatio:false,\n"
-        "      interaction:{mode:'index',intersect:false},\n"
-        "      plugins:{\n"
-        "        tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+(c.parsed.y!=null?c.parsed.y.toFixed(1)+'%':'N/A');}}},\n"
-        "        legend:{position:'top',labels:{font:{size:9},boxWidth:9,padding:4}}\n"
-        "      },\n"
-        "      scales:{\n"
-        "        x:{grid:{color:'#f0f0f0'},ticks:{font:{size:8}}},\n"
-        "        y:{min:0,max:100,grid:{color:'#f0f0f0'},ticks:{font:{size:8},callback:function(v){return v+'%';}}}\n"
+        "  var covBySlot={},maiBySlot={};\n"
+        "  SLOT_KEYS.forEach(function(s){\n"
+        "    var cv=d[s+'_coverage'],mv=d[s+'_mai'];\n"
+        "    covBySlot[s]=(cv!=null&&!isNaN(parseFloat(cv)))?parseFloat(cv):null;\n"
+        "    maiBySlot[s]=(mv!=null&&!isNaN(parseFloat(mv)))?parseFloat(mv):null;\n"
+        "  });\n"
+        # ── getCovRawAcc / getCovInacc / getMaiInacc / renderInaccItems (specialist 묶음) ──
+        # specialist는 항상 items에 포함. specOk=true여도 세부 inaccessible 과목 표시
+        "  function getCovRawAcc(slot){\n"
+        "    var hasCovSlot=acc&&FAC_OD_COLS.some(function(fc){return acc['cov_'+slot+'_'+fc]!==undefined;});\n"
+        "    var hasPtFac=acc&&FAC_OD_COLS.some(function(fc){return acc['pt_'+fc]!==undefined;});\n"
+        "    var raw={};\n"
+        "    FAC_OD_COLS.forEach(function(fc){\n"
+        "      if(!acc){raw[fc]=false;return;}\n"
+        "      if(hasCovSlot){raw[fc]=acc['cov_'+slot+'_'+fc]===1;}\n"
+        "      else if(hasPtFac){raw[fc]=!(acc['pt_'+fc]===0||acc['pt_'+fc]===false);}\n"
+        "      else{raw[fc]=false;}\n"
+        "    });\n"
+        "    return raw;\n"
+        "  }\n"
+        "  function getCovInacc(slot){\n"
+        "    var covV=covBySlot[slot];\n"
+        "    if(!acc){\n"
+        "      if(covV===null||covV===0)return {items:DISPLAY_FAC_COLS.map(function(dc){return {dc:dc,label:DISPLAY_FAC_LABELS[dc]||dc,accessible:false,specDetail:[]};}).filter(function(){return true;}),unknown:false};\n"
+        "      if(covV>=99.99)return {items:[],unknown:false};\n"
+        "      return {items:[],unknown:true};\n"
+        "    }\n"
+        "    var raw=getCovRawAcc(slot);\n"
+        "    var items=[];\n"
+        "    DISPLAY_FAC_COLS.forEach(function(dc){\n"
+        "      if(dc==='specialist'){\n"
+        # specialist: specOk 계산, 항상 push (accessible이더라도)
+        "        var specOk=SPECIALIST_COLS.some(function(fc){return raw[fc]===true;});\n"
+        "        var det=SPECIALIST_COLS.filter(function(fc){return !raw[fc];});\n"
+        # accessible이고 세부 inaccessible도 없으면 skip (완전 접근 가능)
+        "        if(specOk&&det.length===0)return;\n"
+        "        items.push({dc:'specialist',label:SPECIALIST_LABEL,accessible:specOk,specDetail:det});\n"
+        "      } else {\n"
+        "        if(!raw[dc])items.push({dc:dc,label:DISPLAY_FAC_LABELS[dc]||dc,accessible:false,specDetail:[]});\n"
         "      }\n"
+        "    });\n"
+        "    return {items:items,unknown:false};\n"
+        "  }\n"
+        "  function getMaiInacc(){\n"
+        "    var maiV=d.avg_mai;\n"
+        "    if(!acc){\n"
+        "      if(maiV===null||maiV===0)return {items:DISPLAY_FAC_COLS.map(function(dc){return {dc:dc,label:DISPLAY_FAC_LABELS[dc]||dc,accessible:false,specDetail:[]};}).filter(function(){return true;}),unknown:false,tie:false};\n"
+        "      if(maiV>=99.99)return {items:[],unknown:false,tie:false};\n"
+        "      return {items:[],unknown:true,tie:false};\n"
+        "    }\n"
+        "    var hasNewMai=FAC_OD_COLS.some(function(fc){return acc['mai_'+fc]!==undefined;});\n"
+        "    var hasPtFacM=FAC_OD_COLS.some(function(fc){return acc['pt_'+fc]!==undefined;});\n"
+        "    var rawM={};\n"
+        "    FAC_OD_COLS.forEach(function(fc){\n"
+        "      if(hasNewMai){rawM[fc]=acc['mai_'+fc]===1;}\n"
+        "      else if(hasPtFacM){rawM[fc]=!(acc['pt_'+fc]===0||acc['pt_'+fc]===false);}\n"
+        "      else{rawM[fc]=false;}\n"
+        "    });\n"
+        "    var items=[];\n"
+        "    DISPLAY_FAC_COLS.forEach(function(dc){\n"
+        "      if(dc==='specialist'){\n"
+        "        var specOkM=SPECIALIST_COLS.some(function(fc){return rawM[fc]===true;});\n"
+        "        var detM=SPECIALIST_COLS.filter(function(fc){return !rawM[fc];});\n"
+        "        if(specOkM&&detM.length===0)return;\n"
+        "        items.push({dc:'specialist',label:SPECIALIST_LABEL,accessible:specOkM,specDetail:detM});\n"
+        "      } else {\n"
+        "        if(!rawM[dc])items.push({dc:dc,label:DISPLAY_FAC_LABELS[dc]||dc,accessible:false,specDetail:[]});\n"
+        "      }\n"
+        "    });\n"
+        "    return {items:items,unknown:false,tie:acc['mai_is_tie']===1};\n"
+        "  }\n"
+        # renderInaccItems: accessible specialist → 초록 태그 + ℹ, inaccessible → 빨강/청록 태그 + ℹ
+        "  function renderInaccItems(items,pillBg,pillColor,pillBorder,detBg,detColor){\n"
+        "    if(!items||items.length===0)return '';\n"
+        "    return items.map(function(item){\n"
+        "      if(item.dc==='specialist'){\n"
+        "        var tid='sd'+Math.random().toString(36).slice(2,7);\n"
+        # accessible 여부에 따라 태그 색상 결정
+        "        var bg=item.accessible?'#E8F5E9':pillBg;\n"
+        "        var fg=item.accessible?'#2E7D32':pillColor;\n"
+        "        var bd=item.accessible?'#A5D6A7':pillBorder;\n"
+        "        var ps='font-size:8.5px;background:'+bg+';color:'+fg+';border:1px solid '+bd+';border-radius:8px;padding:1px 5px;display:inline-block;';\n"
+        "        var prefix=item.accessible?'✓ ':'';\n"
+        "        var dh=item.specDetail.map(function(fc){return'<span style=\"font-size:8px;margin-right:3px;\">· '+SPECIALIST_DETAIL_LABELS[fc]+'</span>';}).join('');\n"
+        "        return '<span style=\"'+ps+'cursor:default;\">'+prefix+item.label\n"
+        "          +' <span onclick=\"(function(){var e=document.getElementById(\\''+tid+'\\');e.style.display=e.style.display===\\'none\\'?\\'block\\':\\'none\\';})()\" '\n"
+        "          +'style=\"cursor:pointer;font-size:7.5px;color:'+fg+';border:1px solid '+bd+';border-radius:3px;padding:0 3px;margin-left:2px;\" title=\"Show inaccessible sub-types\">ℹ</span>'\n"
+        "          +'</span>'\n"
+        "          +(item.specDetail.length>0\n"
+        "            ?'<div id=\"'+tid+'\" style=\"display:none;width:100%;margin-top:2px;background:'+detBg+';border-radius:4px;padding:2px 6px;font-size:8px;color:'+detColor+';\">'+'Inaccessible: '+dh+'</div>'\n"
+        "            :'<div id=\"'+tid+'\" style=\"display:none;width:100%;margin-top:2px;background:#E8F5E9;border-radius:4px;padding:2px 6px;font-size:8px;color:#2E7D32;\">All sub-types accessible</div>'\n"
+        "          );\n"
+        "      }\n"
+        "      var ps='font-size:8.5px;background:'+pillBg+';color:'+pillColor+';border:1px solid '+pillBorder+';border-radius:8px;padding:1px 5px;display:inline-block;';\n"
+        "      return '<span style=\"'+ps+'\">'+item.label+'</span>';\n"
+        "    }).join('');\n"
+        "  }\n"
+        "  _cpChart=new Chart(ctx,{type:'line',"
+        "    data:{labels:TIME_SLOTS,datasets:["
+        "      {label:'Coverage (%)',data:covVals,borderColor:'" + COV_LINE_COLOR + "',"
+        "backgroundColor:'" + COV_LINE_COLOR + "15',"
+        "pointBackgroundColor:'" + COV_LINE_COLOR + "',pointBorderColor:'#fff',pointBorderWidth:1.2,"
+        "pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:0.15,fill:false},"
+        "      {label:'MAI (%)',data:maiVals,borderColor:'" + MAI_LINE_COLOR + "',"
+        "backgroundColor:'" + MAI_LINE_COLOR + "15',"
+        "pointBackgroundColor:'" + MAI_LINE_COLOR + "',pointBorderColor:'#fff',pointBorderWidth:1.2,"
+        "pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:0.15,fill:false}"
+        "    ]},"
+        "    options:{responsive:true,maintainAspectRatio:false,"
+        # mode:'index' + intersect:false → x축 어디서든 해당 시간대 감지
+        "      interaction:{mode:'index',intersect:false,axis:'x'},"
+        # top padding 넉넉히 줘서 100% 점 잘림 방지
+        "      layout:{padding:{top:12,bottom:2,left:0,right:0}},"
+        "      plugins:{"
+        "        tooltip:{"
+        "          enabled:false,"
+        "          external:function(context){"
+        "            var wrap=document.getElementById('cp-chart-wrap');"
+        "            var tip=document.getElementById('cp-tooltip');"
+        "            if(!tip){"
+        "              tip=document.createElement('div');tip.id='cp-tooltip';"
+        "              tip.style.cssText='position:absolute;background:#fff;border:1px solid #e0e0e0;"
+        "border-radius:7px;padding:9px 11px;font-size:10px;line-height:1.55;"
+        "box-shadow:0 3px 12px rgba(0,0,0,0.13);z-index:9999;width:230px;"
+        "word-break:keep-all;white-space:normal;pointer-events:none;';"
+        "              wrap.appendChild(tip);"
+        "            }"
+        "            var model=context.tooltip;"
+        # opacity===0이면 숨기되, 짧은 지연 후 숨겨서 깜빡임 방지
+        "            if(model.opacity===0){"
+        "              if(tip._hideTimer)clearTimeout(tip._hideTimer);"
+        "              tip._hideTimer=setTimeout(function(){tip.style.display='none';},120);"
+        "              return;"
+        "            }"
+        "            if(tip._hideTimer){clearTimeout(tip._hideTimer);tip._hideTimer=null;}"
+        "            var idx=model.dataPoints&&model.dataPoints[0]?model.dataPoints[0].dataIndex:null;"
+        "            if(idx===null){tip.style.display='none';return;}"
+        "            var slot=SLOT_KEYS[idx];"
+        "            var covV=covBySlot[slot],maiV=maiBySlot[slot];"
+        "            var inaccCov=getCovInacc(slot);"
+        "            var inaccMai=getMaiInacc();"
+        "            var h='';"
+        "            h+='<div style=\"font-weight:700;font-size:11px;color:#222;margin-bottom:6px;"
+        "border-bottom:1.5px solid #f0f0f0;padding-bottom:4px;\">'+TIME_SLOTS[idx]+'</div>';"
+        "            h+='<div style=\"display:flex;align-items:center;gap:5px;margin-bottom:1px;\">';"
+        "            h+='<span style=\"width:9px;height:9px;border-radius:50%;background:" + COV_LINE_COLOR + ";flex-shrink:0;\"></span>';"
+        "            h+='<span style=\"font-weight:700;color:" + COV_LINE_COLOR + ";font-size:10px;\">Coverage: '+(covV!=null?covV.toFixed(1)+'%':'N/A')+'</span></div>';"
+        "            h+='<div style=\"font-size:8px;color:#888;margin-left:14px;margin-bottom:3px;\">Inaccessible within threshold</div>';"
+        "            if(inaccCov.unknown){h+='<div style=\"font-size:9px;color:#B0651A;margin-left:14px;margin-bottom:5px;\">⚠ Details unavailable</div>';}"
+        "            else if(inaccCov.items.length===0){h+='<div style=\"font-size:9px;color:#43A047;margin-left:14px;margin-bottom:5px;\">✓ All accessible</div>';}"
+        "            else{h+='<div style=\"margin-left:14px;margin-bottom:5px;display:flex;flex-wrap:wrap;gap:2px;\">'+renderInaccItems(inaccCov.items,'#FFEBEE','#b71c1c','#ef9a9a','#FFEBEE','#b71c1c')+'</div>';}"
+        "            h+='<div style=\"border-top:1px solid #f5f5f5;padding-top:5px;margin-top:2px;\">';"
+        "            h+='<div style=\"display:flex;align-items:center;gap:5px;margin-bottom:1px;\">';"
+        "            h+='<span style=\"width:9px;height:9px;border-radius:50%;background:" + MAI_LINE_COLOR + ";flex-shrink:0;\"></span>';"
+        "            h+='<span style=\"font-weight:700;color:" + MAI_LINE_COLOR + ";font-size:10px;\">MAI: '+(maiV!=null?maiV.toFixed(1)+'%':'N/A')+'</span></div>';"
+        "            var maiSub='Best reachable grid (within 15 min)'+(inaccMai.tie?' *':'');"
+        "            h+='<div style=\"font-size:8px;color:#888;margin-left:14px;margin-bottom:3px;\">'+maiSub+'</div>';"
+        "            if(inaccMai.tie){h+='<div style=\"font-size:7.5px;color:#aaa;margin-left:14px;margin-bottom:2px;\">* Nearest of tied grids</div>';}"
+        "            if(inaccMai.unknown){h+='<div style=\"font-size:9px;color:#B0651A;margin-left:14px;\">⚠ Details unavailable</div>';}"
+        "            else if(inaccMai.items.length===0){h+='<div style=\"font-size:9px;color:#43A047;margin-left:14px;\">✓ All facility types present</div>';}"
+        "            else{h+='<div style=\"margin-left:14px;display:flex;flex-wrap:wrap;gap:2px;\">'+renderInaccItems(inaccMai.items,'#E0F2F1','#00695C','#80CBC4','#E0F2F1','#00695C')+'</div>';}"
+        "            h+='</div>';"
+        "            tip.innerHTML=h;"
+        "            var wrapW=wrap.offsetWidth||240;"
+        "            var posX=model.caretX+14;"
+        "            if(posX+235>wrapW)posX=model.caretX-244;"
+        "            if(posX<0)posX=2;"
+        "            var posY=model.caretY-20;"
+        "            if(posY<0)posY=2;"
+        "            tip.style.left=posX+'px';"
+        "            tip.style.top=posY+'px';"
+        "            tip.style.display='block';"
+        "          }"
+        "        },"
+        "        legend:{position:'top',align:'start',labels:{font:{size:9},boxWidth:9,padding:6}}"
+        "      },"
+        "      scales:{"
+        "        x:{grid:{color:'#f4f4f4'},ticks:{font:{size:8}}},"
+        # y 최대 103으로 → 100% 점 상단 잘림 방지, suggestedMax로 여유 확보
+        "        y:{min:0,max:103,grid:{color:'#f4f4f4'},ticks:{font:{size:8},callback:function(v){return v<=100?v+'%':'';},"
+        "stepSize:20}}"
+        "      }"
         "    }});\n"
         "  panel.classList.add('visible');\n"
         "  allMaps.forEach(function(m){m.invalidateSize();});\n"
@@ -1084,58 +1381,58 @@ def build_multi_map_html(
         "document.getElementById('cp-close').addEventListener('click',function(){\n"
         "  document.getElementById('cell-panel').classList.remove('visible');\n"
         "  if(_cpChart){_cpChart.destroy();_cpChart=null;}\n"
-        "  if(window._hlLayer){try{window._hlLayer.setStyle({weight:.5,color:'#555',opacity:.5});}catch(ex){}window._hlLayer=null;}\n"
         "  if(window._hlGeoJSON){allMaps.forEach(function(m){try{m.removeLayer(window._hlGeoJSON);}catch(ex){}});window._hlGeoJSON=null;}\n"
         "  allMaps.forEach(function(m){m.invalidateSize();});\n"
         "});\n"
     )
 
+
     panel_html = (
         '<div class="cell-panel" id="cell-panel">'
         '<div style="display:flex;align-items:flex-start;justify-content:space-between;">'
-        '<div>'
-        '<div class="cp-id-sub">SELECTED CELL</div>'
-        '<div class="cp-id" id="cp-fid"></div>'
-        '</div>'
-        '<span class="cp-close" id="cp-close" title="닫기">&#x2715;</span>'
-        '</div>'
-        '<div class="cp-section-lbl" style="color:#7B2CBF;">PUBLIC TRANSIT</div>'
+        '<div style="flex:1;min-width:0;"><div class="cp-id-sub">Selected Cell</div>'
+        '<div class="cp-id" id="cp-fid"></div></div>'
+        '<span class="cp-close" id="cp-close">&#x2715;</span></div>'
+        # PT
+        '<div class="cp-sec" style="color:#3F51B5;">Public Transit</div>'
         '<div class="cp-metrics">'
         '<div class="cp-m"><div class="cp-m-label">avg. Coverage</div><div class="cp-m-val" id="cp-avg-cov">—</div></div>'
         '<div class="cp-m"><div class="cp-m-label">avg. MAI</div><div class="cp-m-val" id="cp-avg-mai">—</div></div>'
         '<div class="cp-m"><div class="cp-m-label">CV Coverage</div><div class="cp-m-val" id="cp-cv-cov">—</div></div>'
         '<div class="cp-m"><div class="cp-m-label">CV MAI</div><div class="cp-m-val" id="cp-cv-mai">—</div></div>'
         '</div>'
-        '<div class="cp-section-lbl" style="color:#9CCC65;">REFERENCE</div>'
+        # SGG avg
+        '<div class="cp-sec" style="color:#3F51B5;">Municipality Avg.</div>'
+        '<div class="cp-sgg-ref">'
+        '<div class="cp-sgg-m"><div class="cp-sgg-label">City Coverage</div><div class="cp-sgg-val" id="cp-sgg-cov">—</div></div>'
+        '<div class="cp-sgg-m"><div class="cp-sgg-label">City MAI</div><div class="cp-sgg-val" id="cp-sgg-mai">—</div></div>'
+        '</div>'
+        # Deficit types
+        '<div class="cp-sec" style="color:#555;margin-top:10px;">Deficit Type</div>'
+        '<div class="cp-deficit-tags" id="cp-deficit-tags"></div>'
+        # Reference
+        '<div class="cp-sec" style="color:#555;">Reference</div>'
         '<div class="cp-ref">'
         '<div class="cp-r"><div class="cp-r-label">Population</div><div class="cp-r-val" id="cp-pop">—</div></div>'
         '<div class="cp-r"><div class="cp-r-label">Car Cov.</div><div class="cp-r-val" id="cp-car-cov">—</div></div>'
         '<div class="cp-r"><div class="cp-r-label">Car MAI</div><div class="cp-r-val" id="cp-car-mai">—</div></div>'
         '</div>'
-        '<div class="cp-section-lbl" style="color:#555;">TIME-OF-DAY</div>'
-        '<div id="cp-chart-wrap"><canvas id="cp-chart"></canvas></div>'
+        # Inaccessible
+        '<div class="cp-sec" style="color:#E65100;">Inaccessible Facilities</div>'
+        '<div class="cp-inacc-tags" id="cp-inacc-tags"></div>'
+        # Chart
+        '<div class="cp-sec" style="color:#555;margin-top:10px;">Time-of-Day Profile</div>'
+        '<div id="cp-chart-wrap" style="position:relative;margin-top:2px;"><canvas id="cp-chart"></canvas></div>'
         '</div>'
     )
 
-    parts = [
+
+
+    html_parts = [
         '<!DOCTYPE html><html><head><meta charset="utf-8"/>',
         '<style>',
         '*{box-sizing:border-box;margin:0;padding:0;}',
-        'body{background:#fff;font-family:sans-serif;}',
-        '.maps-grid{' + grid_css + 'width:100%;}',
-        '.map-wrap{position:relative;}',
-        '.map-title{font-size:12px;font-weight:600;color:#333;padding:2px 6px;background:#f5f5f5;}',
-        '.map-box{width:100%;height:' + str(height_px) + 'px;}',
-        '.fac-ctrl{position:absolute;bottom:32px;right:8px;z-index:1000;',
-        'background:rgba(255,255,255,.97);border:1px solid #bbb;border-radius:6px;',
-        'padding:6px 10px;font-size:11px;line-height:1.9;',
-        'box-shadow:0 2px 6px rgba(0,0,0,.12);min-width:150px;}',
-        '.fac-hdr{font-weight:700;font-size:11px;color:#333;margin-bottom:3px;}',
-        '.fac-ctrl label{display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;}',
-        '.fac-ctrl input{cursor:pointer;margin:0;width:13px;height:13px;}',
-        '.dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,.15);}',
-        '.leaflet-tooltip{font-size:12px;background:rgba(255,255,255,.96);',
-        'border:1px solid #ccc;padding:4px 8px;box-shadow:0 1px 4px rgba(0,0,0,.15);}',
+        'body{background:#fff;font-family:"Inter",system-ui,sans-serif;}',
         panel_css,
         '</style>',
         '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>',
@@ -1155,13 +1452,24 @@ def build_multi_map_html(
         'var gridData=[' + ",".join(grid_js_list) + '];',
         'var subwayData='  + subway_js  + ';',
         'var stationData=' + station_js + ';',
-        'var facData='     + fac_js     + ';',
-        'var facVisible='  + fac_visible_json + ';',
+        'var facData='     + fac_js + ';',
+        'var colorbarsData=' + cbars_js_arr + ';',
+        # fac_visible: localStorage 우선, 없으면 전부 표시
+        '(function(){try{'
+        '  var s=localStorage.getItem("facVisible");'
+        '  window._initFacVisible=s?JSON.parse(s):null;'
+        '}catch(e){window._initFacVisible=null;}})();',
+        'var facVisible=window._initFacVisible||' + json.dumps(list(FACILITY_ORDER)) + ';',
+        'var deficitInfo=' + json.dumps({
+            k: {"c": v, "label": DEFICIT_LABELS[k]}
+            for k, v in deficit_colors.items()
+        }) + ';',
+        'var deficitVisible=[];',
         'var facLayers={};',
+        'var deficitLayers={};',
+        'var gridLayers=[];',
         'var allMaps=[];',
-        'window._hlLayer=null;',
         'window._hlGeoJSON=null;',
-        # getBBox: GeoJSON geometry → [minLng, minLat, maxLng, maxLat]
         'function getBBox(geom){'
         'var mn=[Infinity,Infinity],mx=[-Infinity,-Infinity];'
         'function pt(c){if(c[0]<mn[0])mn[0]=c[0];if(c[1]<mn[1])mn[1]=c[1];'
@@ -1171,468 +1479,87 @@ def build_multi_map_html(
         'if(t==="Polygon")for(var i=0;i<c.length;i++)ring(c[i]);'
         'else if(t==="MultiPolygon")for(var i=0;i<c.length;i++)for(var j=0;j<c[i].length;j++)ring(c[i][j]);'
         'return[mn[0],mn[1],mx[0],mx[1]];}',
-        # pointInPolygon: ray-casting, lat/lng 순서 (Leaflet)
         'function pointInRing(lat,lng,ring){'
         'var inside=false;'
         'for(var i=0,j=ring.length-1;i<ring.length;j=i++){'
         'var xi=ring[i][0],yi=ring[i][1],xj=ring[j][0],yj=ring[j][1];'
         'if(((yi>lat)!=(yj>lat))&&(lng<(xj-xi)*(lat-yi)/(yj-yi)+xi))inside=!inside;}'
-        'return inside;}'
+        'return inside;}',
         'function pointInPolygon(lat,lng,geom){'
         'var t=geom.type,c=geom.coordinates;'
         'if(t==="Polygon"){return pointInRing(lat,lng,c[0]);}'
-        'if(t==="MultiPolygon"){'
-        'for(var i=0;i<c.length;i++){if(pointInRing(lat,lng,c[i][0]))return true;}'
-        'return false;}return false;}',
-        maps_init_js,
+        'if(t==="MultiPolygon"){for(var i=0;i<c.length;i++){if(pointInRing(lat,lng,c[i][0]))return true;}return false;}'
+        'return false;}',
+        maps_init,
         sync_js,
         fac_toggle_js,
+        'window.toggleDeficit=function(dk,on){'
+        '  if(!deficitLayers[dk])return;'
+        '  deficitLayers[dk].maps.forEach(function(x){'
+        '    if(on){if(x.whiteLayer)x.whiteLayer.addTo(x.map);x.layer.addTo(x.map);}'
+        '    else{if(x.whiteLayer)x.map.removeLayer(x.whiteLayer);x.map.removeLayer(x.layer);}'
+        '  });'
+        '};'
+        # basis 변경: grid recolor + colorbar 교체 + deficit recolor (뷰포트 유지)
+        'window.updateDeficitBasis=function(newBasis){'
+        '  window.deficitBasis=newBasis;'
+        '  gridLayers.forEach(function(lyr){lyr.setStyle(lyr.options.style);});'
+        '  colorbarsData.forEach(function(cb,i){'
+        '    var el=document.getElementById("cb"+i);'
+        '    if(el)el.innerHTML=cb[newBasis]||cb["sgg"];'
+        '  });'
+        '  Object.keys(deficitLayers).forEach(function(dk){'
+        '    deficitLayers[dk].maps.forEach(function(x){'
+        '      if(!x.makeStyleFns)return;'
+        '      var fns=x.makeStyleFns(newBasis);'
+        '      x.whiteLayer.setStyle(fns.white);x.layer.setStyle(fns.color);'
+        '    });'
+        '  });'
+        '};'
+        'window.addEventListener("storage",function(ev){'
+        '  if(ev.key==="deficitState"&&ev.newValue){'
+        '    try{var st=JSON.parse(ev.newValue);'
+        '      Object.keys(st).forEach(function(dk){window.toggleDeficit(dk,st[dk]);});'
+        '    }catch(e){}'
+        '  }'
+        '  if(ev.key==="deficitBasis"&&ev.newValue){'
+        '    try{window.updateDeficitBasis(ev.newValue);}catch(e){}'
+        '  }'
+        '});'
+        '(function(){'
+        '  try{'
+        '    var b=localStorage.getItem("deficitBasis");'
+        '    if(b&&b!=="sgg"){window.deficitBasis=b;window.updateDeficitBasis(b);}'
+        '    else{window.deficitBasis="sgg";}'
+        '    var s=localStorage.getItem("deficitState");'
+        '    if(s){var st=JSON.parse(s);Object.keys(st).forEach(function(dk){if(st[dk])window.toggleDeficit(dk,true);});}'
+        '  }catch(e){}'
+        '})();',
         panel_js,
         '</script></body></html>',
     ]
-    return "\n".join(parts)
-
-
-def style_grid_feature(feature, cmap_name: str, norm, value_key: str):
-    value = feature["properties"].get(value_key)
-    color = get_grid_fill_color(value, cmap_name, norm)
-    if color is None:
-        return {"fillOpacity": 0.0, "weight": 0.15, "color": "#666666", "opacity": 0.25}
-    return {"fillColor": color, "fillOpacity": 0.85, "weight": 0.15, "color": "#666666", "opacity": 0.30}
-
-
-
-@st.cache_data(show_spinner=False, max_entries=256)
-def load_colored_geojson(sgg_code: str, value_col: str, cmap_name: str,
-                          norm_vmin: float, norm_vmax: float, norm_gamma: float) -> str:
-    """시군구 GeoJSON을 디스크에서 읽고 각 feature에 fill_color를 미리 계산해서 반환.
-    결과는 st.cache_data가 메모리에 캐시 → rerun마다 재계산 없음."""
-    path = CACHE_GEOJSON_DIR / f"grid_{normalize_sgg_code(sgg_code)}.json"
-    if not path.exists():
-        return "{}"
-    with open(path, "r", encoding="utf-8") as f:
-        gj = json.load(f)
-
-    norm = PowerNormSafe(gamma=norm_gamma, vmin=norm_vmin, vmax=norm_vmax)
-    cmap = matplotlib.colormaps[cmap_name]
-
-    for feat in gj.get("features", []):
-        val = feat["properties"].get(value_col)
-        if val is not None and val > 0:
-            try:
-                rgba = cmap(norm(float(val)))
-                feat["properties"]["_fill"] = mcolors.to_hex(rgba, keep_alpha=False)
-                feat["properties"]["_opacity"] = 0.85
-            except Exception:
-                feat["properties"]["_fill"] = None
-                feat["properties"]["_opacity"] = 0.0
-        else:
-            feat["properties"]["_fill"] = None
-            feat["properties"]["_opacity"] = 0.0
-    return json.dumps(gj)
-
-
-@st.cache_data(show_spinner=False)
-def load_static_layer_json(path_str: str) -> str:
-    """정적 GeoJSON 파일 읽기 캐시."""
-    p = Path(path_str)
-    if not p.exists():
-        return "{}"
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-
-def add_colored_grid_layer(m: folium.Map, sgg_code: str, value_col: str,
-                            cmap_name: str, norm, tooltip_value_col: str):
-    """색상이 properties에 미리 담긴 GeoJSON을 로드해서 style_function 없이 렌더링."""
-    geojson_str = load_colored_geojson(
-        sgg_code, value_col, cmap_name,
-        float(norm.vmin), float(norm.vmax), float(norm.gamma),
-    )
-    if geojson_str == "{}":
-        return
-
-    fields = [GRID_JOIN_COL, SGG_NAME_COL, tooltip_value_col]
-    aliases = ["Cell", "Municipality", "Value"]
-    fields = [f for f in fields if f in [GRID_JOIN_COL, SGG_NAME_COL, tooltip_value_col]]
-
-    GeoJson(
-        data=geojson_str,
-        style_function=lambda feat: {
-            "fillColor": feat["properties"].get("_fill") or "#cccccc",
-            "fillOpacity": feat["properties"].get("_opacity", 0.0),
-            "weight": 0.15,
-            "color": "#666666",
-            "opacity": 0.30,
-        },
-        tooltip=GeoJsonTooltip(fields=fields, aliases=aliases[:len(fields)], sticky=False),
-        control=False,
-        smooth_factor=0,
-        zoom_on_click=False,
-    ).add_to(m)
-
-
-def add_static_layers_from_cache(m: folium.Map, sgg_code: str,
-                                  station_gdf, subway_gdf, fac_gdf,
-                                  bbox_5179=None):
-    """정적 레이어(역/노선/시설)를 디스크 캐시 GeoJSON에서 로드.
-    캐시 파일이 없으면 메모리 GeoDataFrame fallback."""
-
-    # 지하철 노선
-    if CACHE_SUBWAY_JSON.exists():
-        subway_json = load_static_layer_json(str(CACHE_SUBWAY_JSON))
-    else:
-        sub = bbox_subset(subway_gdf, bbox_5179) if bbox_5179 else subway_gdf
-        subway_json = sub.to_crs(WEB_CRS).to_json() if len(sub) else None
-
-    if subway_json and subway_json != "{}":
-        folium.GeoJson(
-            subway_json,
-            style_function=lambda x: {"color": "#888888", "weight": 1.0, "opacity": 0.28},
-            control=False,
-            smooth_factor=2,
-        ).add_to(m)
-
-    # 역
-    if CACHE_STATION_JSON.exists():
-        station_json = load_static_layer_json(str(CACHE_STATION_JSON))
-    else:
-        sub = bbox_subset(station_gdf, bbox_5179) if bbox_5179 else station_gdf
-        station_json = sub.to_crs(WEB_CRS).to_json() if len(sub) else None
-
-    if station_json and station_json != "{}":
-        folium.GeoJson(
-            station_json,
-            marker=folium.CircleMarker(radius=3, color="#666666", weight=0.9,
-                                        fill=True, fill_color="white", fill_opacity=0.9),
-            control=False,
-        ).add_to(m)
-
-    # 시설
-    for ftype in FACILITY_ORDER:
-        color = FACILITY_COLORS.get(ftype, "#999999")
-        fac_path = Path(CACHE_FAC_JSON_TPL.format(ftype=ftype))
-        if fac_path.exists():
-            fac_json = load_static_layer_json(str(fac_path))
-        else:
-            sub = fac_gdf[fac_gdf["fac_type_norm"] == ftype]
-            if bbox_5179:
-                sub = bbox_subset(sub, bbox_5179)
-            fac_json = sub.to_crs(WEB_CRS).to_json() if len(sub) else None
-
-        if fac_json and fac_json != "{}":
-            folium.GeoJson(
-                fac_json,
-                marker=folium.CircleMarker(radius=3, color="white", weight=0.6,
-                                            fill=True, fill_color=color, fill_opacity=0.75),
-                control=False,
-            ).add_to(m)
-
-
-def build_base_map(center: Tuple[float, float], zoom: int = 11) -> folium.Map:
-    return folium.Map(
-        location=center,
-        zoom_start=zoom,
-        tiles="CartoDB positron",
-        control_scale=False,
-        prefer_canvas=True,
-    )
-
-
-def add_subway_station_facilities(m: folium.Map, station, subway, fac, bbox=None):
-    if bbox is not None:
-        station = bbox_subset(station, bbox) if not station.empty else station
-        subway = bbox_subset(subway, bbox) if not subway.empty else subway
-        fac = bbox_subset(fac, bbox) if not fac.empty else fac
-
-    if len(subway):
-        folium.GeoJson(
-            subway.to_crs(WEB_CRS).to_json(),
-            style_function=lambda x: {"color": "#666666", "weight": 1.0, "opacity": 0.30},
-            control=False,
-            smooth_factor=1,
-        ).add_to(m)
-
-    if len(station):
-        station_w = station.to_crs(WEB_CRS)
-        # CircleMarker 루프 대신 GeoJson으로 일괄 렌더링
-        folium.GeoJson(
-            station_w.to_json(),
-            style_function=lambda x: {
-                "radius": 4,
-                "color": "#666666",
-                "weight": 0.9,
-                "fillColor": "white",
-                "fillOpacity": 0.9,
-                "opacity": 0.65,
-            },
-            marker=folium.CircleMarker(
-                radius=3,
-                color="#666666",
-                weight=0.9,
-                fill=True,
-                fill_color="white",
-                fill_opacity=0.9,
-            ),
-            control=False,
-        ).add_to(m)
-
-    if len(fac):
-        fac_w = fac.to_crs(WEB_CRS)
-        for ftype, gg in fac_w.groupby("fac_type_norm"):
-            color = FACILITY_COLORS.get(ftype, "#999999")
-            folium.GeoJson(
-                gg.to_json(),
-                style_function=lambda x, c=color: {
-                    "radius": 5,
-                    "color": "white",
-                    "weight": 0.6,
-                    "fillColor": c,
-                    "fillOpacity": 0.72,
-                    "opacity": 0.72,
-                },
-                marker=folium.CircleMarker(
-                    radius=3,
-                    color="white",
-                    weight=0.6,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.72,
-                ),
-                control=False,
-            ).add_to(m)
-
-
-def add_grid_layer(m: folium.Map, cells: gpd.GeoDataFrame, value_col: str, cmap_name: str, norm):
-    cells_safe = make_json_safe_geojson_gdf(cells, [GRID_JOIN_COL, SGG_NAME_COL, value_col]).to_crs(WEB_CRS)
-
-    # GeoJSON 문자열로 변환해서 컬럼명 보존 (__geo_interface__는 properties 키가 달라질 수 있음)
-    geojson_str = cells_safe.to_json()
-
-    # GeoJSON properties 키를 직접 확인해서 tooltip fields 결정
-    available_props = set(cells_safe.columns) - {"geometry"}
-    fields = [c for c in [GRID_JOIN_COL, SGG_NAME_COL, value_col] if c in available_props]
-    aliases_map = {
-        GRID_JOIN_COL: "Cell",
-        SGG_NAME_COL: "Municipality",
-        value_col: "Value",
-    }
-    aliases = [aliases_map[c] for c in fields]
-
-    tooltip = GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False) if fields else None
-
-    GeoJson(
-        data=geojson_str,
-        style_function=lambda feat: style_grid_feature(feat, cmap_name, norm, value_col),
-        tooltip=tooltip,
-        control=False,
-        smooth_factor=0,
-        zoom_on_click=False,
-    ).add_to(m)
-
-
-def add_sgg_layer(m: folium.Map, sgg: gpd.GeoDataFrame, value_col: str, cmap_name: str, norm):
-    sgg_safe = make_json_safe_geojson_gdf(sgg, [SGG_NAME_COL, value_col]).to_crs(WEB_CRS)
-
-    geojson_str = sgg_safe.to_json()
-
-    available_props = set(sgg_safe.columns) - {"geometry"}
-    fields = [c for c in [SGG_NAME_COL, value_col] if c in available_props]
-    aliases_map = {
-        SGG_NAME_COL: "Municipality",
-        value_col: "Value",
-    }
-    aliases = [aliases_map[c] for c in fields]
-
-    tooltip = GeoJsonTooltip(fields=fields, aliases=aliases, sticky=False) if fields else None
-
-    GeoJson(
-        data=geojson_str,
-        style_function=lambda feat: style_grid_feature(feat, cmap_name, norm, value_col),
-        tooltip=tooltip,
-        control=False,
-        smooth_factor=0,
-        zoom_on_click=False,
-    ).add_to(m)
-
-
-# =========================================================
-# 상세 패널
-# =========================================================
-def _fv(val, suffix: str = "%", dec: int = 2) -> str:
-    if val is None:
-        return "N/A"
-    try:
-        f = float(val)
-        return "N/A" if f != f else f"{f:.{dec}f}{suffix}"
-    except Exception:
-        return "N/A"
-
-
-@st.cache_data(show_spinner=False, max_entries=4096)
-def _cell_chart_html(cov_json: str, mai_json: str, slots_json: str) -> str:
-    """Chart.js 컴팩트 시계열 그래프 HTML (height ~160px)."""
-    C, M = "#7B2CBF", "#9CCC65"
-    return (
-        '<!DOCTYPE html><html><head><meta charset="utf-8"/>'
-        '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
-        '<style>*{margin:0;padding:0;box-sizing:border-box;}'
-        'body{background:#fff;padding:0 2px;}'
-        'canvas{display:block;width:100%!important;height:155px!important;}'
-        '</style></head><body><canvas id="c"></canvas><script>'
-        'new Chart(document.getElementById("c"),{type:"line",'
-        'data:{labels:' + slots_json + ',datasets:['
-        '{"label":"Coverage (%)","data":' + cov_json + ',"borderColor":"' + C + '",'
-        '"backgroundColor":"' + C + '18","pointBackgroundColor":"' + C + '",'
-        '"pointBorderColor":"#fff","pointBorderWidth":1.2,"pointRadius":3,'
-        '"borderWidth":1.8,"tension":0.15,"fill":false},'
-        '{"label":"MAI (%)","data":' + mai_json + ',"borderColor":"' + M + '",'
-        '"backgroundColor":"' + M + '18","pointBackgroundColor":"' + M + '",'
-        '"pointBorderColor":"#fff","pointBorderWidth":1.2,"pointRadius":3,'
-        '"borderWidth":1.8,"tension":0.15,"fill":false}'
-        ']},'
-        'options:{responsive:true,maintainAspectRatio:false,'
-        'interaction:{mode:"index",intersect:false},'
-        'plugins:{'
-        'tooltip:{callbacks:{label:function(c){'
-        'return c.dataset.label+": "+(c.parsed.y!=null?c.parsed.y.toFixed(1)+"%":"N/A");}}},'
-        'legend:{position:"top",labels:{font:{size:10},boxWidth:10,padding:5}}},'
-        'scales:{'
-        'x:{grid:{color:"#f0f0f0"},ticks:{font:{size:9}}},'
-        'y:{min:0,max:100,grid:{color:"#f0f0f0"},'
-        'ticks:{font:{size:9},callback:function(v){return v+"%";}}}}'
-        '}});'
-        '</script></body></html>'
-    )
-
-
-def render_cell_info_panel(cell_id: str, cell_df: pd.DataFrame):
-    """학술발표용 컴팩트 셀 상세 패널 — 지도 우측 열에 배치."""
-    row_df = cell_df[cell_df[GRID_JOIN_COL] == cell_id]
-    if row_df.empty:
-        st.caption(f"데이터 없음: {cell_id}")
-        return
-    row = row_df.iloc[0]
-
-    # 셀 ID 헤더
-    st.markdown(
-        f'<div style="font-size:10px;color:#999;letter-spacing:.5px;margin-bottom:1px;">SELECTED CELL</div>'
-        f'<div style="font-size:13px;font-weight:700;color:#1a1a1a;'
-        f'border-bottom:2px solid #7B2CBF;padding-bottom:4px;margin-bottom:8px;">'
-        f'{cell_id}</div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── PT 지표 (2×2 metric) ──────────────────────────────
-    st.markdown(
-        '<div style="font-size:9px;font-weight:700;letter-spacing:.8px;'
-        'color:#7B2CBF;margin-bottom:4px;">PUBLIC TRANSIT</div>',
-        unsafe_allow_html=True,
-    )
-    ca, cb = st.columns(2)
-    ca.metric("avg. Coverage", _fv(row.get("avg_coverage")))
-    cb.metric("avg. MAI",      _fv(row.get("avg_mai")))
-    cc, cd = st.columns(2)
-    cc.metric("CV Coverage",   _fv(row.get("cv_coverage"), suffix=""))
-    cd.metric("CV MAI",        _fv(row.get("cv_mai"),      suffix=""))
-
-    # ── 참고 지표 (소형 3열) ─────────────────────────────
-    st.markdown(
-        '<div style="font-size:9px;font-weight:700;letter-spacing:.8px;'
-        'color:#9CCC65;margin-top:6px;margin-bottom:3px;">REFERENCE</div>',
-        unsafe_allow_html=True,
-    )
-
-    def _ref_cell(label: str, val: str) -> str:
-        return (
-            f'<div style="line-height:1.35;">'
-            f'<div style="font-size:9px;color:#aaa;">{label}</div>'
-            f'<div style="font-size:12px;font-weight:600;color:#444;">{val}</div>'
-            f'</div>'
-        )
-
-    r1, r2, r3 = st.columns(3)
-    r1.markdown(_ref_cell("Population", _fv(row.get("pop"), suffix="", dec=0)), unsafe_allow_html=True)
-    r2.markdown(_ref_cell("Car Cov.",   _fv(row.get("car_coverage"))),          unsafe_allow_html=True)
-    r3.markdown(_ref_cell("Car MAI",    _fv(row.get("car_mai"))),               unsafe_allow_html=True)
-
-    # ── 시계열 그래프 ─────────────────────────────────────
-    st.markdown(
-        '<div style="font-size:9px;font-weight:700;letter-spacing:.8px;'
-        'color:#555;margin-top:8px;margin-bottom:2px;">TIME-OF-DAY PROFILE</div>',
-        unsafe_allow_html=True,
-    )
-    cov_vals = [round(float(row[c]), 2) if pd.notna(row.get(c)) else None for c in COV_COLS]
-    mai_vals = [round(float(row[c]), 2) if pd.notna(row.get(c)) else None for c in MAI_COLS]
-    slots    = [t + ":00" for t in TIME_SLOTS]
-    st_components.html(
-        _cell_chart_html(json.dumps(cov_vals), json.dumps(mai_vals), json.dumps(slots)),
-        height=172, scrolling=False,
-    )
-
-
-def render_selected_cell_panel(
-    selected_from_id: str,
-    grid_gdf: gpd.GeoDataFrame,
-    idx_df: pd.DataFrame,
-    metric_key: str,
-    basis_key: str,
-    station_gdf, subway_gdf, fac_gdf,
-    cell_df: Optional[pd.DataFrame] = None,
-):
-    """cell_df 있으면 Chart.js 패널, 없으면 idx_df fallback."""
-    data = cell_df if (cell_df is not None and not cell_df.empty) else idx_df
-    render_cell_info_panel(selected_from_id, data)
-
+    return "\n".join(html_parts)
 
 
 # =========================================================
 # norm / 값 컬럼
 # =========================================================
 def get_value_col(metric_key: str, basis_key: str) -> str:
-    if metric_key == "pop":
-        return "local_pop_map" if basis_key == "sgg" else "nat_pop_map"
+    if metric_key == "pop":      return "local_pop_map" if basis_key == "sgg" else "nat_pop_map"
+    if metric_key == "coverage": return "avg_coverage"
+    if metric_key == "mai":      return "avg_mai"
     return f"{basis_key}_{metric_key}_ratio"
 
-
-def get_norm_for_group(group: gpd.GeoDataFrame, metric_key: str, basis_key: str, scale_mode: str):
-    global global_ratio_norm, global_pop_norm
-
-    if scale_mode == "Global":
-        return global_pop_norm if metric_key == "pop" else global_ratio_norm
-
+def get_norm_for_group(group: gpd.GeoDataFrame, metric_key: str, basis_key: str):
+    """norm 계산 (Local 스케일 고정 — scale_mode 제거됨)."""
+    if metric_key == "coverage":
+        return compute_continuous_norm(group.get("avg_coverage", pd.Series([], dtype=float)), gamma=0.6)[2]
+    if metric_key == "mai":
+        return compute_continuous_norm(group.get("avg_mai", pd.Series([], dtype=float)), gamma=0.6)[2]
     if metric_key == "pop":
-        series = group["local_pop_map" if basis_key == "sgg" else "nat_pop_map"]
-        return compute_group_pop_norm(series, share_mode=(POP_MAP_MODE == "share"))[2]
-
-    vals = pd.concat(
-        [
-            pd.to_numeric(group[f"{basis_key}_fs_ratio"], errors="coerce"),
-            pd.to_numeric(group[f"{basis_key}_fd_ratio"], errors="coerce"),
-            pd.to_numeric(group[f"{basis_key}_tc_ratio"], errors="coerce"),
-            pd.to_numeric(group[f"{basis_key}_tf_ratio"], errors="coerce"),
-        ],
-        axis=0,
-    )
+        return compute_group_pop_norm(group.get("local_pop_map" if basis_key == "sgg" else "nat_pop_map", pd.Series([], dtype=float)), share_mode=True)[2]
+    vals = pd.concat([pd.to_numeric(group.get(f"{basis_key}_{k}_ratio", pd.Series()), errors="coerce") for k in ["fs","fd","tc","tf"]], axis=0)
     return compute_group_norm_from_series(vals, gamma=0.55, force_zero_min=True)[2]
-
-
-def subset_layers_by_bbox(
-    bbox_5179: Optional[Tuple[float, float, float, float]],
-    base_gdf: Optional[gpd.GeoDataFrame],
-    station_gdf: gpd.GeoDataFrame,
-    subway_gdf: gpd.GeoDataFrame,
-    fac_gdf: gpd.GeoDataFrame,
-):
-    if bbox_5179 is None:
-        if base_gdf is None or base_gdf.empty:
-            return station_gdf.iloc[0:0], subway_gdf.iloc[0:0], fac_gdf.iloc[0:0]
-        bbox_5179 = tuple(base_gdf.total_bounds)
-
-    station_sub = bbox_subset(station_gdf, bbox_5179)
-    subway_sub = bbox_subset(subway_gdf, bbox_5179)
-    fac_sub = bbox_subset(fac_gdf, bbox_5179)
-    return station_sub, subway_sub, fac_sub
 
 
 def render_metric_maps(
@@ -1641,7 +1568,6 @@ def render_metric_maps(
     aggregate_gdf: gpd.GeoDataFrame,
     selected_metrics: List[str],
     basis_key: str,
-    scale_mode: str,
     station_gdf, subway_gdf, fac_gdf,
     initial_center: Tuple[float, float],
     initial_zoom: int = 11,
@@ -1649,168 +1575,180 @@ def render_metric_maps(
     selected_sgg_code: str = "",
     compare_partner_gdf: Optional[gpd.GeoDataFrame] = None,
     cell_df: Optional[pd.DataFrame] = None,
+    fac_access_df: Optional[pd.DataFrame] = None,
 ):
     if "fac_visible" not in st.session_state:
         st.session_state["fac_visible"] = list(FACILITY_ORDER)
 
-    def get_norm_unified(mk):
-        if compare_partner_gdf is not None and not compare_partner_gdf.empty:
-            combined = pd.concat([group_gdf, compare_partner_gdf], ignore_index=True)
-        else:
-            combined = group_gdf
-        return get_norm_for_group(combined, mk, basis_key, scale_mode)
+    # basis_key는 sidebar에서 localStorage로 JS에 전달되므로 여기선 cell_data 용도로만 사용
 
-    n = len(selected_metrics)
-    metrics_list = []
-    for mk in selected_metrics:
-        vc   = get_value_col(mk, basis_key)
-        norm = get_norm_unified(mk)
-        metrics_list.append({
-            "metric_key": mk, "value_col": vc,
-            "cmap": CMAPS[mk],
-            "vmin": float(norm.vmin), "vmax": float(norm.vmax), "gamma": float(norm.gamma),
-            "title": LAYER_KEY_TO_LABEL[mk],
-        })
-    metrics_json = json.dumps(metrics_list)
-
-    # ── 현재 시군구 셀 데이터를 JSON으로 직렬화해 iframe에 전달 ──
+    # ── cell data JSON (sgg_avg 포함) ─────────────────
+    cell_data_json = "{}"
     data_src = cell_df if (cell_df is not None and not cell_df.empty) else None
     if data_src is not None:
-        # 해당 시군구 셀만 필터링
-        sgg_code_str = str(selected_sgg_code)
         if SGG_CODE_COL in data_src.columns:
-            sub = data_src[data_src[SGG_CODE_COL].apply(normalize_sgg_code) == normalize_sgg_code(sgg_code_str)]
+            sub = data_src[data_src[SGG_CODE_COL].apply(normalize_sgg_code) == normalize_sgg_code(str(selected_sgg_code))]
         else:
-            # cell_df에 sgg 컬럼 없으면 group_gdf의 from_id 목록으로 필터
             valid_ids = set(group_gdf[GRID_JOIN_COL].astype(str).str.strip())
             sub = data_src[data_src[GRID_JOIN_COL].isin(valid_ids)]
-        if sub.empty:
-            cell_data_json = "{}"
-        else:
-            wanted_cols = ([GRID_JOIN_COL, "pop", "avg_coverage", "avg_mai",
-                            "cv_coverage", "cv_mai", "car_coverage", "car_mai"]
-                           + COV_COLS + MAI_COLS)
-            sub = sub[[c for c in wanted_cols if c in sub.columns]].copy()
 
-            def _safe(v):
-                """float NaN/Inf → None, 나머지는 Python 기본형으로."""
-                if v is None:
-                    return None
-                try:
-                    f = float(v)
-                    return None if (f != f or f == float('inf') or f == float('-inf')) else f
-                except (TypeError, ValueError):
-                    return str(v) if v else None
+        if not sub.empty:
+            # sgg_avg: from group_gdf (캐시된 값 우선, 없으면 계산)
+            sgg_cov = sgg_mai = None
+            # sgg_avg_coverage
+            if "sgg_avg_coverage" in group_gdf.columns:
+                vals = group_gdf["sgg_avg_coverage"].dropna()
+                if len(vals): sgg_cov = float(vals.iloc[0])
+            elif "sgg_avg_coverage" in sub.columns:
+                vals = sub["sgg_avg_coverage"].dropna()
+                if len(vals): sgg_cov = float(vals.iloc[0])
+            # sgg_avg_mai
+            if "sgg_avg_mai" in group_gdf.columns:
+                vals = group_gdf["sgg_avg_mai"].dropna()
+                if len(vals): sgg_mai = float(vals.iloc[0])
+            elif "sgg_avg_mai" in sub.columns:
+                vals = sub["sgg_avg_mai"].dropna()
+                if len(vals): sgg_mai = float(vals.iloc[0])
+            # 재계산 fallback: avg_coverage * pop / total_pop
+            if sgg_cov is None and "avg_coverage" in sub.columns and "pop" in sub.columns:
+                pop_s = pd.to_numeric(sub["pop"], errors="coerce").fillna(0)
+                cov_s = pd.to_numeric(sub["avg_coverage"], errors="coerce")
+                total = pop_s.sum()
+                if total > 0: sgg_cov = float((cov_s * pop_s).sum() / total)
+            if sgg_mai is None and "avg_mai" in sub.columns and "pop" in sub.columns:
+                pop_s = pd.to_numeric(sub["pop"], errors="coerce").fillna(0)
+                mai_s = pd.to_numeric(sub["avg_mai"], errors="coerce")
+                total = pop_s.sum()
+                if total > 0: sgg_mai = float((mai_s * pop_s).sum() / total)
 
-            cell_dict = {}
-            for _, row in sub.iterrows():
-                fid = str(row[GRID_JOIN_COL])
-                cell_dict[fid] = {c: _safe(row[c]) for c in sub.columns if c != GRID_JOIN_COL}
-            cell_data_json = json.dumps(cell_dict)
-    else:
-        cell_data_json = "{}"
+            wanted = [GRID_JOIN_COL, "pop", "avg_coverage", "avg_mai",
+                      "cv_coverage", "cv_mai", "car_coverage", "car_mai"] + COV_COLS + MAI_COLS
+            sub = sub[[c for c in wanted if c in sub.columns]].copy()
 
-    rows      = 1 if n <= 2 else 2
-    iframe_h  = (MAP_HEIGHT + 26) * rows + 16
+            # 숫자 컬럼 float 변환 + inf/nan → None (vectorized)
+            data_cols = [c for c in sub.columns if c != GRID_JOIN_COL]
+            for c in data_cols:
+                if sub[c].dtype.kind in ("f", "i", "u"):
+                    sub[c] = pd.to_numeric(sub[c], errors="coerce")
+            sub = sub.replace([np.inf, -np.inf], np.nan)
+
+            # deficit 플래그: group_gdf에서 한 번에 join
+            deficit_flag_cols = []
+            for dk in ["fs", "fd", "tc", "tf"]:
+                for bp in ["sgg", "nat"]:
+                    col = f"{bp}_has_{dk}"
+                    if col in group_gdf.columns:
+                        deficit_flag_cols.append(col)
+            if deficit_flag_cols and GRID_JOIN_COL in group_gdf.columns:
+                def_ref = group_gdf[[GRID_JOIN_COL] + deficit_flag_cols].copy()
+                def_ref[GRID_JOIN_COL] = def_ref[GRID_JOIN_COL].astype(str).str.strip()
+                for c in deficit_flag_cols:
+                    def_ref[c] = def_ref[c].astype(bool)
+                sub = sub.merge(def_ref, on=GRID_JOIN_COL, how="left")
+                for c in deficit_flag_cols:
+                    sub[c] = sub[c].fillna(False)
+
+            # sgg_avg 상수 컬럼 추가
+            sub["sgg_avg_coverage"] = sgg_cov
+            sub["sgg_avg_mai"]      = sgg_mai
+
+            # to_dict → JSON (pandas가 NaN을 None으로 못 변환하므로 직접 처리)
+            sub[GRID_JOIN_COL] = sub[GRID_JOIN_COL].astype(str)
+            records = sub.where(sub.notna(), other=None).to_dict(orient="records")
+            cell_dict = {r[GRID_JOIN_COL]: {k: v for k, v in r.items() if k != GRID_JOIN_COL} for r in records}
+            cell_data_json = json.dumps(cell_dict, default=lambda x: None if (isinstance(x, float) and (x != x or abs(x) == float('inf'))) else x)
+
+    # ── facility access JSON ─────────────────────────
+    fac_access_json = "{}"
+    if fac_access_df is not None and not fac_access_df.empty:
+        valid_ids = set(group_gdf[GRID_JOIN_COL].astype(str).str.strip())
+        fac_sub   = fac_access_df[fac_access_df[GRID_JOIN_COL].isin(valid_ids)].copy()
+        if not fac_sub.empty:
+            new_cov_cols = [c for c in fac_sub.columns if c.startswith("cov_")]
+            new_mai_cols = [c for c in fac_sub.columns if c.startswith("mai_") and c not in ("mai_is_tie","mai_best_to_id")]
+            legacy_cols  = [c for c in fac_sub.columns if c.startswith("pt_")]
+            keep_cols    = [GRID_JOIN_COL] + new_cov_cols + new_mai_cols + legacy_cols
+            if "mai_is_tie"     in fac_sub.columns: keep_cols.append("mai_is_tie")
+            if "mai_best_to_id" in fac_sub.columns: keep_cols.append("mai_best_to_id")
+            fac_sub = fac_sub[[c for c in keep_cols if c in fac_sub.columns]].copy()
+            # int8/int16 컬럼 → int, str 컬럼 유지
+            for c in fac_sub.columns:
+                if c in (GRID_JOIN_COL, "mai_best_to_id"): continue
+                if fac_sub[c].dtype.kind in ("i", "u", "b"):
+                    fac_sub[c] = fac_sub[c].astype(int)
+            fac_sub[GRID_JOIN_COL] = fac_sub[GRID_JOIN_COL].astype(str)
+            records = fac_sub.where(fac_sub.notna(), other=None).to_dict(orient="records")
+            fac_dict = {r[GRID_JOIN_COL]: {k: v for k, v in r.items() if k != GRID_JOIN_COL} for r in records}
+            fac_access_json = json.dumps(fac_dict)
+
+    n        = len(selected_metrics)
+    rows     = 1 if n <= 2 else 2
+    iframe_h = (MAP_HEIGHT + 42 + 26) * rows + 16
 
     html = build_multi_map_html(
-        sgg_code         = str(selected_sgg_code),
-        metrics_json     = metrics_json,
-        center_lat       = initial_center[0],
-        center_lng       = initial_center[1],
-        zoom             = initial_zoom,
-        height_px        = MAP_HEIGHT,
-        fac_visible_json = json.dumps(st.session_state["fac_visible"]),
+        sgg_code=str(selected_sgg_code),
+        metric_keys_str="|".join(selected_metrics),
+        center_lat=initial_center[0],
+        center_lng=initial_center[1],
+        zoom=initial_zoom,
+        height_px=MAP_HEIGHT,
+        deficit_colors_json=json.dumps(DEFICIT_COLORS),
     )
-    # cell_data_json은 캐시 밖에서 </body> 직전에 주입 (캐시 무력화 방지)
     html_final = html.replace(
         '</body></html>',
-        f'<script>window.cellData={cell_data_json};</script></body></html>',
+        f'<script>'
+        f'window.cellData={cell_data_json};'
+        f'window.facAccessData={fac_access_json};'
+        f'</script></body></html>',
     )
     st_components.html(html_final, height=iframe_h, scrolling=False)
-
-    if n == 1:
-        norm = get_norm_unified(selected_metrics[0])
-        st.markdown(make_streamlit_colorbar_html(
-            cmap_name=CMAPS[selected_metrics[0]], norm=norm,
-            title=LAYER_KEY_TO_LABEL[selected_metrics[0]] + " (%)", percent=True,
-        ), unsafe_allow_html=True)
-    else:
-        cols = st.columns(2)
-        for i, mk in enumerate(selected_metrics):
-            with cols[i % 2]:
-                norm = get_norm_unified(mk)
-                st.markdown(make_streamlit_colorbar_html(
-                    cmap_name=CMAPS[mk], norm=norm,
-                    title=LAYER_KEY_TO_LABEL[mk] + " (%)", percent=True,
-                ), unsafe_allow_html=True)
-    return None
-
 
 
 # =========================================================
 # 앱 시작
 # =========================================================
 st.set_page_config(page_title="PT Deficit Dashboard", layout="wide")
-st.title("PT accessibility deficit dashboard")
+st.markdown(
+    '<h1 style="font-size:20px;font-weight:700;color:#1a1a1a;margin-bottom:2px;">'
+    'PT Accessibility Deficit Dashboard</h1>'
+    '<p style="font-size:12px;color:#999;margin-bottom:14px;">Grid-level public transit accessibility analysis</p>',
+    unsafe_allow_html=True,
+)
 
 required_paths = [CLASSIFIED_PATH, GRID_PATH, STATION_PATH, SUBWAY_PATH, FAC_PATH]
-missing_paths = [str(p) for p in required_paths if not p.exists()]
+missing_paths  = [str(p) for p in required_paths if not p.exists()]
 if missing_paths:
-    st.error("필수 입력 파일이 없습니다.\n\n" + "\n".join(missing_paths))
+    st.error("Required input files missing:\n\n" + "\n".join(missing_paths))
     st.stop()
 
+
 def _dropbox_safe_clear_geojson_dir():
-    """Dropbox 동기화 잠금을 우회하며 geojson_tiles 폴더를 비운다.
-    shutil.rmtree 대신 파일별 개별 삭제 + 재시도로 PermissionError 방지."""
     import os, time
     if not CACHE_GEOJSON_DIR.exists():
-        CACHE_GEOJSON_DIR.mkdir(parents=True, exist_ok=True)
-        return
-    # 파일 개별 삭제 (최대 5회 재시도)
+        CACHE_GEOJSON_DIR.mkdir(parents=True, exist_ok=True); return
     for f in list(CACHE_GEOJSON_DIR.iterdir()):
         if f.is_file():
             for attempt in range(6):
-                try:
-                    f.unlink(missing_ok=True)
-                    break
-                except PermissionError:
-                    time.sleep(0.4 * (attempt + 1))
-    # 빈 하위 폴더 제거
-    for d in list(CACHE_GEOJSON_DIR.iterdir()):
-        if d.is_dir():
-            for attempt in range(6):
-                try:
-                    d.rmdir()
-                    break
-                except (PermissionError, OSError):
-                    time.sleep(0.4 * (attempt + 1))
-    # 폴더 자체는 유지 (rmdir 대신)
+                try: f.unlink(missing_ok=True); break
+                except PermissionError: time.sleep(0.4 * (attempt + 1))
     CACHE_GEOJSON_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _run_build_with_progress():
     _dropbox_safe_clear_geojson_dir()
-    load_cached_data.clear()
-    load_colored_geojson.clear()
-    load_static_layer_json.clear()
+    for fn in [load_cached_data, load_cell_detail_data, load_facility_access_data]:
+        fn.clear()
     try: build_multi_map_html.clear()
-    except Exception: pass
-
-    status = st.empty()
-    pbar   = st.progress(0)
-    stxt   = st.empty()
-    status.info("⚙️ 캐시 빌드 시작...")
+    except: pass
+    status = st.empty(); pbar = st.progress(0); stxt = st.empty()
+    status.info("⚙️ Building cache...")
     pbar.progress(5)
-
     def _pcb(step, total, msg):
         pbar.progress(min(int(10 + 85 * step / max(total, 1)), 95))
         stxt.caption("🗺️ " + msg)
-
     build_dashboard_cache(progress_cb=_pcb)
-    pbar.progress(100)
-    stxt.empty()
-    status.success("✅ 캐시 빌드 완료!")
+    pbar.progress(100); stxt.empty()
+    status.success("✅ Cache build complete!")
 
 
 with st.sidebar:
@@ -1820,60 +1758,45 @@ with st.sidebar:
         st.rerun()
 
 _tiles_ok   = CACHE_GEOJSON_DIR.exists() and any(CACHE_GEOJSON_DIR.glob("grid_*.json"))
-cache_ready = _tiles_ok and all(
-    p.exists() for p in [CACHE_GRID, CACHE_SGG, CACHE_STATION, CACHE_SUBWAY, CACHE_FAC, CACHE_TS, CACHE_IDX]
-)
+cache_ready = _tiles_ok and all(p.exists() for p in [CACHE_GRID, CACHE_SGG, CACHE_STATION, CACHE_SUBWAY, CACHE_FAC, CACHE_TS, CACHE_IDX])
 if not cache_ready:
-    st.info("⚙️ 처음 실행입니다. 캐시를 빌드합니다 (수 분 소요)...")
-    _pbar = st.progress(0)
-    _stxt = st.empty()
+    st.info("⚙️ First run — building cache (this may take a few minutes)...")
+    _pbar = st.progress(0); _stxt = st.empty()
     def _auto_pcb(step, total, msg):
         _pbar.progress(int(100 * step / max(total, 1)))
         _stxt.caption("🗺️ " + msg)
     build_dashboard_cache(progress_cb=_auto_pcb)
-    _pbar.progress(100)
-    _stxt.empty()
+    _pbar.progress(100); _stxt.empty()
     st.rerun()
 
-with st.spinner("데이터 로드 중..."):
+with st.spinner("Loading data..."):
     grid_gdf, grid_simple_gdf, sgg_gdf, station_gdf, subway_gdf, fac_gdf, ts_df, idx_df = load_cached_data()
-    cell_df = load_cell_detail_data()
+    cell_df      = load_cell_detail_data()
+    fac_access_df = load_facility_access_data()
 
-global_ratio_norm = compute_group_norm_from_series(
-    pd.concat(
-        [
-            grid_gdf["nat_fs_ratio"],
-            grid_gdf["nat_fd_ratio"],
-            grid_gdf["nat_tc_ratio"],
-            grid_gdf["nat_tf_ratio"],
-            grid_gdf["sgg_fs_ratio"],
-            grid_gdf["sgg_fd_ratio"],
-            grid_gdf["sgg_tc_ratio"],
-            grid_gdf["sgg_tf_ratio"],
-        ],
-        axis=0,
-    ),
-    gamma=0.55,
-    force_zero_min=True,
-)[2]
-global_pop_norm = compute_group_pop_norm(grid_gdf["nat_pop_map"], share_mode=(POP_MAP_MODE == "share"))[2]
+# sgg_avg merge fallback
+if not cell_df.empty and "sgg_avg_coverage" not in cell_df.columns:
+    if "sgg_avg_coverage" in grid_gdf.columns:
+        sgg_ref  = grid_gdf[[GRID_JOIN_COL, "sgg_avg_coverage", "sgg_avg_mai"]].copy()
+        cell_df  = cell_df.merge(sgg_ref, on=GRID_JOIN_COL, how="left")
+if not cell_df.empty and SGG_CODE_COL not in cell_df.columns:
+    if SGG_CODE_COL in grid_gdf.columns:
+        sgg_code_ref = grid_gdf[[GRID_JOIN_COL, SGG_CODE_COL]].copy()
+        cell_df      = cell_df.merge(sgg_code_ref, on=GRID_JOIN_COL, how="left")
 
-sgg_options = sorted(
-    grid_gdf[[SGG_CODE_COL, SGG_NAME_COL]].drop_duplicates().itertuples(index=False, name=None),
-    key=lambda x: x[1]
-)
+
+sgg_options    = sorted(grid_gdf[[SGG_CODE_COL, SGG_NAME_COL]].drop_duplicates().itertuples(index=False, name=None), key=lambda x: x[1])
 sgg_name_to_code = {name: code for code, name in sgg_options}
 
-def _sido(name): return name.split("_")[0] if "_" in name else name
-def _sgg(name):  return name.split("_", 1)[1] if "_" in name else name
+def _sido(n): return n.split("_")[0] if "_" in n else n
+def _sgg(n):  return n.split("_",1)[1] if "_" in n else n
 
-sido_list = sorted(set(_sido(n) for n in sgg_name_to_code))
+sido_list    = sorted(set(_sido(n) for n in sgg_name_to_code))
 sido_to_names = {}
 for name in sgg_name_to_code:
     sido_to_names.setdefault(_sido(name), []).append(name)
 for k in sido_to_names:
     sido_to_names[k] = sorted(sido_to_names[k], key=_sgg)
-
 
 def sgg_selector(prefix, la="Province", lb="Municipality"):
     sido_sel = st.selectbox(la, sido_list, key=prefix + "_sido")
@@ -1884,6 +1807,7 @@ def sgg_selector(prefix, la="Province", lb="Municipality"):
     return full, sgg_name_to_code.get(full)
 
 
+# ── 사이드바 ──────────────────────────────────────────
 with st.sidebar:
     st.header("Display")
     compare_mode = st.toggle("Compare two municipalities", value=False, key="toggle_compare")
@@ -1897,93 +1821,124 @@ with st.sidebar:
         st.markdown("**Municipality B**")
         full2, code2 = sgg_selector("cmp_b", "Province B", "City/County B")
 
-    basis_label = st.selectbox(
-        "Benchmark basis",
-        ["Municipality-based benchmark", "National benchmark"],
-        index=0, key="benchmark_basis",
-    )
+    basis_label = st.selectbox("Benchmark basis",
+                               ["Municipality-based benchmark", "National benchmark"],
+                               index=0, key="benchmark_basis")
     basis = "sgg" if basis_label.startswith("Municipality") else "nat"
 
+    # basis 변경 → localStorage에 deficitBasis 저장 (iframe 재생성 없이 뷰포트 유지)
+    _basis_prev_key = "basis_prev"
+    _basis_prev = st.session_state.get(_basis_prev_key, None)
+    if _basis_prev is not None and _basis_prev != basis:
+        _basis_script = (
+            f"<script>(function(){{"
+            f"  try{{localStorage.setItem('deficitBasis','{basis}');"
+            f"  window.dispatchEvent(new StorageEvent('storage',{{key:'deficitBasis',newValue:'{basis}'}}));"
+            f"  }}catch(e){{}}"
+            f"}})();</script>"
+        )
+        st_components.html(_basis_script, height=0, scrolling=False)
+    st.session_state[_basis_prev_key] = basis
+
+    st.markdown("---")
+    st.markdown("**Base map layers**")
     selected_metric_labels = st.multiselect(
-        "Indicators to display",
-        ["F(s)", "F(d)", "T(c)", "T(f)", "Population"],
-        default=["F(s)"], key="metric_multiselect",
+        "Base map layers",
+        ["Coverage (avg.)", "MAI (avg.)", "Population"],
+        default=["Coverage (avg.)", "MAI (avg.)", "Population"],
+        key="base_metric_multiselect",
+        label_visibility="collapsed",
     )
-    if not selected_metric_labels:
-        selected_metric_labels = ["F(s)"]
+    label_to_key_base = {"Population": "pop", "Coverage (avg.)": "coverage", "MAI (avg.)": "mai"}
+    if not selected_metric_labels: selected_metric_labels = ["Population"]
+    selected_metric_keys = [label_to_key_base[x] for x in selected_metric_labels]
 
-    scale_label = st.selectbox(
-        "Color scale",
-        ["Local scale by municipality", "Global scale"],
-        index=0, key="scale_mode_select",
-    )
-    scale_mode = "Local by SGG" if scale_label.startswith("Local") else "Global"
+    st.markdown("---")
+    st.markdown("**Deficit overlay**")
+    st.caption("Overlays deficit cell borders on the base map.")
 
-    st.caption("Indicator definitions")
-    st.markdown(build_metric_help_html(), unsafe_allow_html=True)
+    deficit_fs = st.checkbox("F(s) — Facility siting",     value=False, key="def_fs")
+    deficit_fd = st.checkbox("F(d) — Facility dispersion", value=False, key="def_fd")
+    deficit_tc = st.checkbox("T(c) — Transit connection",  value=False, key="def_tc")
+    deficit_tf = st.checkbox("T(f) — Transit frequency",   value=False, key="def_tf")
+
+    deficit_visible = {
+        "fs": deficit_fs, "fd": deficit_fd,
+        "tc": deficit_tc, "tf": deficit_tf,
+    }
+
+    # 색상 범례
+    if any(deficit_visible.values()):
+        st.markdown(
+            "<div style='margin-top:4px;'>" +
+            "".join(
+                f"<div style='display:flex;align-items:center;gap:6px;margin-bottom:3px;'>"
+                f"<span style='width:18px;height:3px;display:inline-block;"
+                f"background:{DEFICIT_COLORS[k]};border-radius:2px;'></span>"
+                f"<span style='font-size:11px;color:#555;'>{DEFICIT_LABELS[k]}</span></div>"
+                for k in ["fs","fd","tc","tf"] if deficit_visible[k]
+            ) + "</div>",
+            unsafe_allow_html=True,
+        )
+
+    # sidebar 체크박스 변경 → localStorage로 deficit 상태 공유 (뷰포트 유지)
+    # iframe 내부에서 storage 이벤트를 수신해 toggleDeficit 호출
+    _dv_prev_key = "dv_prev"
+    dv_now  = {k: v for k, v in deficit_visible.items()}
+    dv_prev = st.session_state.get(_dv_prev_key, {})
+    changed = {k for k in dv_now if dv_now.get(k) != dv_prev.get(k)}
+    if changed:
+        # localStorage에 현재 deficit 상태 전체를 JSON으로 저장
+        import json as _json
+        dv_dict = {k: bool(v) for k, v in dv_now.items()}
+        dv_json_safe = _json.dumps(_json.dumps(dv_dict))  # 이중 직렬화로 따옴표 이스케이프
+        script = (
+            f"<script>"
+            f"(function(){{"
+            f"  var v={dv_json_safe};"
+            f"  try{{localStorage.setItem('deficitState',v);"
+            f"  window.dispatchEvent(new StorageEvent('storage',{{key:'deficitState',newValue:v}}));"
+            f"  }}catch(e){{}}"
+            f"}})();"
+            f"</script>"
+        )
+        st_components.html(script, height=0, scrolling=False)
+    st.session_state[_dv_prev_key] = dv_now
+
+    st.markdown("---")
     st.caption("Stations, subway lines, and facility points shown on each map.")
 
-selected_metric_keys = [LAYER_LABEL_TO_KEY[x] for x in selected_metric_labels]
 
-if not compare_mode:
-    if not selected_code:
-        st.warning("선택된 시군구를 찾을 수 없습니다.")
-        st.stop()
-    group        = grid_simple_gdf[grid_simple_gdf[SGG_CODE_COL] == selected_code].copy()
-    group_detail = grid_gdf[grid_gdf[SGG_CODE_COL] == selected_code].copy()
-    sgg_group    = sgg_gdf[sgg_gdf[SGG_CODE_COL] == selected_code].copy()
-    center_web   = group_detail.to_crs(WEB_CRS).geometry.centroid.unary_union.centroid
-
+# ── 메인 맵 렌더링 ────────────────────────────────────
+def _render(code, full_name, compare_partner_gdf=None):
+    group        = grid_simple_gdf[grid_simple_gdf[SGG_CODE_COL] == code].copy()
+    group_detail = grid_gdf[grid_gdf[SGG_CODE_COL] == code].copy()
+    sgg_group    = sgg_gdf[sgg_gdf[SGG_CODE_COL] == code].copy()
+    center       = group_detail.to_crs(WEB_CRS).geometry.centroid.unary_union.centroid
     render_metric_maps(
-        map_prefix="single_city",
+        map_prefix=f"map_{code}",
         group_gdf=group, aggregate_gdf=sgg_group,
         selected_metrics=selected_metric_keys,
-        basis_key=basis, scale_mode=scale_mode,
-        station_gdf=station_gdf, subway_gdf=subway_gdf, fac_gdf=fac_gdf,
-        initial_center=(center_web.y, center_web.x), initial_zoom=11,
+        basis_key=basis, station_gdf=station_gdf, subway_gdf=subway_gdf, fac_gdf=fac_gdf,
+        initial_center=(center.y, center.x), initial_zoom=11,
         click_source_gdf=group_detail,
-        selected_sgg_code=str(selected_code),
-        compare_partner_gdf=None,
+        selected_sgg_code=str(code),
+        compare_partner_gdf=compare_partner_gdf,
         cell_df=cell_df,
+        fac_access_df=fac_access_df,
     )
 
+if not compare_mode:
+    if not selected_code: st.warning("Municipality not found."); st.stop()
+    _render(selected_code, selected_full)
 else:
-    if not code1 or not code2:
-        st.warning("선택된 시군구를 찾을 수 없습니다.")
-        st.stop()
-    group1        = grid_simple_gdf[grid_simple_gdf[SGG_CODE_COL] == code1].copy()
-    group2        = grid_simple_gdf[grid_simple_gdf[SGG_CODE_COL] == code2].copy()
-    group1_detail = grid_gdf[grid_gdf[SGG_CODE_COL] == code1].copy()
-    group2_detail = grid_gdf[grid_gdf[SGG_CODE_COL] == code2].copy()
-    sgg1_poly     = sgg_gdf[sgg_gdf[SGG_CODE_COL] == code1].copy()
-    sgg2_poly     = sgg_gdf[sgg_gdf[SGG_CODE_COL] == code2].copy()
-
+    if not code1 or not code2: st.warning("Municipality not found."); st.stop()
+    group1 = grid_simple_gdf[grid_simple_gdf[SGG_CODE_COL] == code1].copy()
+    group2 = grid_simple_gdf[grid_simple_gdf[SGG_CODE_COL] == code2].copy()
     c1, c2 = st.columns(2)
     with c1:
         st.subheader(full1)
-        center1 = group1_detail.to_crs(WEB_CRS).geometry.centroid.unary_union.centroid
-        render_metric_maps(
-            map_prefix="compare_a",
-            group_gdf=group1, aggregate_gdf=sgg1_poly,
-            selected_metrics=selected_metric_keys,
-            basis_key=basis, scale_mode=scale_mode,
-            station_gdf=station_gdf, subway_gdf=subway_gdf, fac_gdf=fac_gdf,
-            initial_center=(center1.y, center1.x), initial_zoom=11,
-            click_source_gdf=group1_detail,
-            selected_sgg_code=str(code1), compare_partner_gdf=group2,
-            cell_df=cell_df,
-        )
+        _render(code1, full1, compare_partner_gdf=group2)
     with c2:
         st.subheader(full2)
-        center2 = group2_detail.to_crs(WEB_CRS).geometry.centroid.unary_union.centroid
-        render_metric_maps(
-            map_prefix="compare_b",
-            group_gdf=group2, aggregate_gdf=sgg2_poly,
-            selected_metrics=selected_metric_keys,
-            basis_key=basis, scale_mode=scale_mode,
-            station_gdf=station_gdf, subway_gdf=subway_gdf, fac_gdf=fac_gdf,
-            initial_center=(center2.y, center2.x), initial_zoom=11,
-            click_source_gdf=group2_detail,
-            selected_sgg_code=str(code2), compare_partner_gdf=group1,
-            cell_df=cell_df,
-        )
+        _render(code2, full2, compare_partner_gdf=group1)
