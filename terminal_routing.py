@@ -5,8 +5,8 @@
 - 경로 필터링:
   1) Origin 터미널에서 도보로 먼 다른 터미널까지 걸어간 뒤 대중교통을
      타는 경로는 제외 (origin 터미널을 실제로 이용하지 않는 OD)
-  2) OD별 최적 경로 4개만 유지:
-     a. 최소 환승  b. 최소 비용  c. 최소 대기시간 합  d. 최단 소요시간
+  2) OD별 최적 경로 3개만 유지:
+     a. 최소 환승  b. 최소 대기시간 합  c. 최단 소요시간
 - 최적화: vectorized pandas, 병렬 청크 처리
 """
 
@@ -39,21 +39,6 @@ DEFAULT_CRS = "EPSG:4326"
 # 첫 번째 대중교통 leg 출발지와 origin 간 최대 허용 직선거리 (m)
 # 이 거리를 초과하면 "origin 터미널을 이용하지 않는 경로" 로 판정하여 제외
 ORIGIN_WALK_THRESHOLD_M = 800
-
-# 기본 요금 테이블 (원) ── 필요에 따라 수정
-FARE_TABLE = {
-    "WALK": 0,
-    "BICYCLE": 0,
-    "BUS": 1_400,
-    "RAIL": 1_400,      # 일반 철도 / 지하철
-    "SUBWAY": 1_350,
-    "TRAM": 1_250,
-    "FERRY": 1_000,
-    "CABLE_CAR": 0,
-    "GONDOLA": 0,
-    "FUNICULAR": 0,
-}
-TRANSFER_DISCOUNT = 0  # 환승 할인 (동일 수단 간) ── 정책에 맞게 조정
 
 # r5py 라우팅 파라미터
 DEPARTURE_TIME = dt.datetime(2025, 4, 15, 8, 0)  # 출발 시각
@@ -173,13 +158,13 @@ def aggregate_itinerary_metrics(legs_df: pd.DataFrame) -> pd.DataFrame:
     """
     legs 단위 → itinerary(option) 단위 집계.
     컬럼: from_id, to_id, option, n_transfers, total_time_min,
-          total_wait_min, total_cost, first_transit_distance_from_origin_m
+          total_wait_min, first_transit_geom
     """
     if legs_df.empty:
         return pd.DataFrame(columns=[
             "from_id", "to_id", "option",
             "n_transfers", "total_time_min", "total_wait_min",
-            "total_cost", "first_transit_geom",
+            "first_transit_geom",
         ])
 
     df = legs_df.copy()
@@ -261,11 +246,6 @@ def aggregate_itinerary_metrics(legs_df: pd.DataFrame) -> pd.DataFrame:
         total_wait_min=("wait_time_min", "sum"),
     ).reset_index()
 
-    # 비용 계산
-    transit_df = df[is_transit].copy()
-    transit_df["leg_fare"] = transit_df["mode"].map(FARE_TABLE).fillna(0)
-    fare_agg = transit_df.groupby(grp, sort=False)["leg_fare"].sum().reset_index(name="total_cost")
-
     # 첫 번째 대중교통 leg의 geometry (origin 필터용)
     first_transit = (
         df[is_transit]
@@ -282,11 +262,9 @@ def aggregate_itinerary_metrics(legs_df: pd.DataFrame) -> pd.DataFrame:
 
     # ── 병합 ──
     result = agg_time.merge(n_transit_legs[grp + ["n_transfers"]], on=grp, how="left")
-    result = result.merge(fare_agg, on=grp, how="left")
     result = result.merge(first_transit_geom[grp + ["first_transit_geom"]], on=grp, how="left")
 
     result["n_transfers"] = result["n_transfers"].fillna(0).astype(int)
-    result["total_cost"] = result["total_cost"].fillna(0)
     result["total_time_min"] = result["total_time_min"] + result["total_wait_min"]
 
     return result
@@ -363,15 +341,14 @@ def filter_origin_usage(
 
 
 # =========================================================
-# 7. OD별 최적 경로 4개 선택
+# 7. OD별 최적 경로 3개 선택
 # =========================================================
 def select_best_routes(metrics: pd.DataFrame) -> pd.DataFrame:
     """
-    OD 쌍별로 4개 최적 경로 선택:
+    OD 쌍별로 3개 최적 경로 선택:
       1. 최소 환승 (n_transfers → total_time_min tiebreak)
-      2. 최소 비용 (total_cost → total_time_min tiebreak)
-      3. 최소 대기시간 합 (total_wait_min → total_time_min tiebreak)
-      4. 최단 시간 (total_time_min)
+      2. 최소 대기시간 합 (total_wait_min → total_time_min tiebreak)
+      3. 최단 시간 (total_time_min)
     중복 option 은 제거.
     """
     if metrics.empty:
@@ -382,7 +359,6 @@ def select_best_routes(metrics: pd.DataFrame) -> pd.DataFrame:
 
     criteria = [
         ("min_transfer", ["n_transfers", "total_time_min"]),
-        ("min_cost",     ["total_cost",    "total_time_min"]),
         ("min_wait",     ["total_wait_min","total_time_min"]),
         ("min_time",     ["total_time_min"]),
     ]
@@ -492,7 +468,7 @@ def run(
 
     # 5) OD별 최적 경로 선택
     print("=" * 60)
-    print("[5/5] OD별 최적 경로 선택 (4가지 기준)")
+    print("[5/5] OD별 최적 경로 선택 (3가지 기준)")
     best = select_best_routes(metrics)
 
     # geometry 컬럼 제거 후 저장
