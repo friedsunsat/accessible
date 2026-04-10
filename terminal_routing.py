@@ -47,8 +47,7 @@ TERMINAL_PATH = (
     _DB / r"03-Projects\16. 2026 HKSTS\02_Seminar\r2\interstops.gpkg"
 )
 GTFS_DIR = (
-    _DB / r"01-대학원\02-Paper Work\02-데이터\06-대중교통\2025"
-         r"\2025-TM-PT-GTFS 대중교통GTFS(2024년 기준)\GTFS_fixed"
+    _DB / r"C:\Users\82102\Dropbox\01-대학원\02-Paper Work\02-데이터\06-대중교통\2025"
 )
 OSM_PBF_PATH = (
     _DB / r"01-대학원\02-Paper Work\02-데이터\19-osm\kor.osm.pbf"
