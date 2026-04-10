@@ -32,8 +32,31 @@ except ImportError:
 
 
 # =========================================================
-# 0. 설정
+# 0. 경로 / 설정
 # =========================================================
+def _pick_dropbox_base() -> Path:
+    for p in [Path(r"E:\Dropbox"), Path(r"C:\Users\82102\Dropbox"), Path.home() / "Dropbox"]:
+        if p.exists():
+            return p
+    return Path(r"C:\Users\82102\Dropbox")
+
+_DB = _pick_dropbox_base()
+
+# ── 입력 데이터 경로 ──────────────────────────────────────────
+TERMINAL_PATH = (
+    _DB / r"03-Projects\16. 2026 HKSTS\02_Seminar\r2\interstops.gpkg"
+)
+GTFS_DIR = (
+    _DB / r"01-대학원\02-Paper Work\02-데이터\06-대중교통\2025"
+         r"\2025-TM-PT-GTFS 대중교통GTFS(2024년 기준)\GTFS_fixed"
+)
+OSM_PBF_PATH = (
+    _DB / r"01-대학원\02-Paper Work\02-데이터\19-osm\kor.osm.pbf"
+)
+# 결과 저장 경로
+OUTPUT_DIR = _DB / r"03-Projects\16. 2026 HKSTS\02_Seminar\r2"
+OUTPUT_PATH = OUTPUT_DIR / "terminal_od_routes.parquet"
+
 DEFAULT_CRS = "EPSG:4326"
 
 # 첫 번째 대중교통 leg 출발지와 origin 간 최대 허용 직선거리 (m)
@@ -46,8 +69,22 @@ MAX_TRIP_DURATION = dt.timedelta(hours=4)
 MAX_WALK_DISTANCE = 2_000       # 최대 도보 거리 (m)
 MAX_RIDES = 8                    # 최대 탑승 횟수
 
-# 청크 크기 (한 번에 라우팅할 OD 쌍 수) ── 메모리/속도 트레이드오프
+# 청크 크기 (한 번에 라우팅할 origin 수) ── 메모리/속도 트레이드오프
 CHUNK_SIZE = 200
+
+
+def discover_gtfs_zips(gtfs_dir: Path) -> list[Path]:
+    """GTFS 폴더에서 .zip 파일 자동 탐색."""
+    d = Path(gtfs_dir)
+    if not d.exists():
+        sys.exit(f"GTFS 폴더가 존재하지 않습니다: {d}")
+    zips = sorted(d.glob("*.zip"))
+    if not zips:
+        sys.exit(f"GTFS zip 파일이 없습니다: {d}")
+    print(f"[GTFS 탐색] {len(zips)}개 zip 발견:")
+    for z in zips:
+        print(f"  {z.name}")
+    return zips
 
 
 # =========================================================
@@ -491,39 +528,39 @@ def run(
 def main():
     parser = argparse.ArgumentParser(
         description="터미널 간 대중교통 경로 분석 (r5py detailed itineraries)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-사용 예시:
-  python terminal_routing.py \\
-    --terminals terminals.gpkg \\
-    --osm south-korea.osm.pbf \\
-    --gtfs gtfs_bus.zip gtfs_rail.zip \\
-    --output terminal_routes.parquet \\
-    --departure "2025-04-15 08:00" \\
-    --id-col stop_id \\
-    --walk-threshold 800 \\
-    --chunk-size 200
-        """,
     )
-    parser.add_argument("--terminals", required=True, help="터미널 GeoDataFrame 파일 (gpkg/geojson/shp/geoparquet)")
-    parser.add_argument("--osm", required=True, help="OSM PBF 파일 경로")
-    parser.add_argument("--gtfs", required=True, nargs="+", help="GTFS zip 파일 경로 (복수 가능)")
-    parser.add_argument("--output", default="terminal_od_routes.parquet", help="출력 parquet 경로")
-    parser.add_argument("--departure", default="2025-04-15 08:00", help="출발 시각 (YYYY-MM-DD HH:MM)")
+    parser.add_argument("--terminals", default=str(TERMINAL_PATH),
+                        help=f"터미널 gpkg (기본: {TERMINAL_PATH.name})")
+    parser.add_argument("--osm", default=str(OSM_PBF_PATH),
+                        help=f"OSM PBF (기본: {OSM_PBF_PATH.name})")
+    parser.add_argument("--gtfs-dir", default=str(GTFS_DIR),
+                        help="GTFS zip 폴더 (자동 탐색)")
+    parser.add_argument("--gtfs", nargs="*", default=None,
+                        help="GTFS zip 직접 지정 (생략 시 --gtfs-dir 에서 자동 탐색)")
+    parser.add_argument("--output", default=str(OUTPUT_PATH),
+                        help=f"출력 parquet (기본: {OUTPUT_PATH.name})")
+    parser.add_argument("--departure", default="2025-04-15 08:00",
+                        help="출발 시각 (YYYY-MM-DD HH:MM)")
     parser.add_argument("--id-col", default="id", help="터미널 ID 컬럼명")
     parser.add_argument("--walk-threshold", type=float, default=ORIGIN_WALK_THRESHOLD_M,
-                        help=f"Origin 터미널 이용 판정 최대 거리 (m, 기본 {ORIGIN_WALK_THRESHOLD_M})")
+                        help=f"Origin 이용 판정 거리 (m, 기본 {ORIGIN_WALK_THRESHOLD_M})")
     parser.add_argument("--chunk-size", type=int, default=CHUNK_SIZE,
-                        help=f"한 번에 라우팅할 origin 수 (기본 {CHUNK_SIZE})")
+                        help=f"청크 origin 수 (기본 {CHUNK_SIZE})")
 
     args = parser.parse_args()
+
+    # GTFS: 직접 지정 or 폴더 자동 탐색
+    if args.gtfs:
+        gtfs_paths = [Path(g) for g in args.gtfs]
+    else:
+        gtfs_paths = discover_gtfs_zips(Path(args.gtfs_dir))
 
     departure = dt.datetime.strptime(args.departure, "%Y-%m-%d %H:%M")
 
     result = run(
         terminal_path=args.terminals,
         osm_pbf=args.osm,
-        gtfs_paths=args.gtfs,
+        gtfs_paths=gtfs_paths,
         output_path=args.output,
         departure=departure,
         id_col=args.id_col,
